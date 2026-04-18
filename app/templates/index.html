@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{ title }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', path='style.css') }}" />
+  </head>
+  <body>
+    <div class="shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">Agent Meeting Room</p>
+          <h1>多角色專案會議代理系統</h1>
+          <p class="subtitle">
+            先整理、再討論、再收斂，讓第一版就能把會議摘要、風險與待辦穩定產出。
+          </p>
+        </div>
+        <div class="hero-card">
+          <span>目前狀態</span>
+          <strong id="meeting-state-pill">未建立會議</strong>
+          <small id="meeting-mode-pill">等待建立</small>
+        </div>
+      </header>
+
+      <main class="workspace">
+        <section class="panel form-panel">
+          <div class="panel-head">
+            <h2>建立會議</h2>
+            <p>先整理前提，再進入正式會議。</p>
+          </div>
+          <form id="create-meeting-form" class="stack">
+            <label>
+              會議主題
+              <input type="text" name="topic" placeholder="例如：第一版 Agent Meeting Room 開發規劃" required />
+            </label>
+            <label>
+              會議模式
+              <select name="meeting_mode">
+                <option value="pre_project">事前規劃</option>
+                <option value="in_progress">執行中追蹤</option>
+                <option value="post_review">事後檢討</option>
+              </select>
+            </label>
+            <label>
+              背景資料
+              <textarea
+                name="background"
+                rows="5"
+                placeholder="輸入專案背景、目標、限制條件、目前情況"
+              ></textarea>
+            </label>
+            <label>
+              時程
+              <input type="text" name="timeline" placeholder="例如：兩週內完成 MVP" />
+            </label>
+            <label>
+              任務清單
+              <textarea
+                name="task_list"
+                rows="3"
+                placeholder="每行一項，例如：建立 API&#10;完成 HTML 介面&#10;加入測試"
+              ></textarea>
+            </label>
+            <label>
+              Blocker 清單
+              <textarea
+                name="blockers"
+                rows="3"
+                placeholder="每行一項，例如：尚未確認 GitHub 發佈流程"
+              ></textarea>
+            </label>
+            <label>
+              風險清單
+              <textarea
+                name="risks"
+                rows="3"
+                placeholder="每行一項，例如：需求持續變動造成重工"
+              ></textarea>
+            </label>
+            <label>
+              驗收標準
+              <textarea
+                name="acceptance_criteria"
+                rows="3"
+                placeholder="每行一項，例如：可建立會議、可輸出摘要、可匯出 Markdown"
+              ></textarea>
+            </label>
+            <button type="submit" class="primary">建立會議</button>
+          </form>
+        </section>
+
+        <section class="panel conversation-panel">
+          <div class="panel-head">
+            <h2>角色討論區</h2>
+            <p id="meeting-id-text">尚未建立會議</p>
+          </div>
+          <div id="timeline" class="timeline empty">
+            建立會議後，發想訪談官與主持人的內容會出現在這裡。
+          </div>
+          <div class="actions-grid">
+            <button id="confirm-button" class="secondary" disabled>確認前提</button>
+            <button id="finalize-button" class="secondary" disabled>整理最終摘要</button>
+            <button data-export="json" class="ghost export-button" disabled>匯出 JSON</button>
+            <button data-export="markdown" class="ghost export-button" disabled>匯出 Markdown</button>
+            <button data-export="html" class="ghost export-button" disabled>匯出 HTML</button>
+          </div>
+          <form id="discussion-form" class="stack inline-form">
+            <label>
+              正式會議輸入
+              <textarea
+                name="message"
+                rows="4"
+                placeholder="輸入想法、補充背景或希望本輪討論的重點"
+              ></textarea>
+            </label>
+            <button type="submit" class="primary" disabled id="discussion-submit">送出本輪討論</button>
+          </form>
+          <form id="interrupt-form" class="stack inline-form">
+            <label>
+              使用者插話
+              <textarea
+                name="message"
+                rows="3"
+                placeholder="輸入補充、修正或希望排入下一輪的內容"
+              ></textarea>
+            </label>
+            <label>
+              優先級
+              <select name="priority">
+                <option value="medium">中優先</option>
+                <option value="low">低優先</option>
+                <option value="high">高優先</option>
+              </select>
+            </label>
+            <button type="submit" class="secondary" disabled id="interrupt-submit">提交插話</button>
+          </form>
+          <form id="reframe-form" class="stack inline-form">
+            <label>
+              重整前提
+              <textarea
+                name="updated_context"
+                rows="3"
+                placeholder="高優先修正後，把新前提寫在這裡"
+              ></textarea>
+            </label>
+            <button type="submit" class="secondary" disabled id="reframe-submit">更新並重整</button>
+          </form>
+        </section>
+
+        <aside class="panel summary-panel">
+          <div class="panel-head">
+            <h2>主持人摘要</h2>
+            <p>會議結果會同步整理在右側。</p>
+          </div>
+          <div id="summary-card" class="summary-card empty">
+            尚未產出摘要。
+          </div>
+          <div class="queue-panel">
+            <h3>待處理插話</h3>
+            <div id="interrupt-list" class="interrupt-list empty">目前沒有待處理插話。</div>
+          </div>
+        </aside>
+      </main>
+    </div>
+
+    <script src="{{ url_for('static', path='app.js') }}"></script>
+  </body>
+</html>
+
