@@ -124,3 +124,15 @@ python -m unittest discover -s tests -v
 - 目前角色引擎為可測試的規則式版本，方便先把狀態機、資料流與輸出格式打通。
 - 後續可以在不改動 API 契約的前提下，替換成真正的 LLM 驅動角色流程。
 
+## Railway 部署重點
+
+本專案已提供 `railway.json`，內容已預先設定：
+
+- 啟動指令：`uvicorn app.main:create_app --factory --host 0.0.0.0 --port $PORT`
+- 健康檢查路徑：`/api/health`
+
+部署到 Railway 時，最重要的是：
+
+- Web 服務要綁定 `0.0.0.0:$PORT`
+- 專案內要有 PostgreSQL 服務
+- 應用程式服務要能讀到 `DATABASE_URL`
