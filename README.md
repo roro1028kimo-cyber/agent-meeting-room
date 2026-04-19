@@ -2,6 +2,8 @@
 
 Agent Meeting Room is a first-version meeting orchestration MVP based on the specification in `agent.md`.
 
+For the implementation handoff summary, see `REPORT.md`.
+
 This build follows the agreed stack:
 
 - Frontend: HTML + CSS + vanilla JavaScript
@@ -87,4 +89,3 @@ python -m unittest discover -s tests -v
 - SQLite is kept only as a test fallback.
 - The current role engine is deterministic and template-based so the first version is testable end-to-end.
 - A future iteration can replace the role engine with LLM-backed prompting without changing the API contract.
-
