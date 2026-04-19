@@ -67,7 +67,11 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
     @app.get("/", response_class=HTMLResponse)
     def index(request: Request) -> HTMLResponse:
-        return templates.TemplateResponse("index.html", {"request": request, "title": settings.app_name})
+        return templates.TemplateResponse(
+            request=request,
+            name="index.html",
+            context={"title": settings.app_name},
+        )
 
     @app.get("/api/health")
     def health(request: Request) -> dict[str, object]:

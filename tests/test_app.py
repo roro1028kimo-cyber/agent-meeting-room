@@ -41,6 +41,11 @@ class AgentMeetingRoomTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         return response.json()
 
+    def test_homepage_renders_successfully(self) -> None:
+        response = self.client.get("/")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("Agent Meeting Room", response.text)
+
     def test_create_meeting_generates_intake_message(self) -> None:
         meeting = self.create_meeting()
         self.assertEqual(meeting["current_state"], "intake")
