@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+import logging
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
@@ -49,6 +50,7 @@ from app.schemas import (
 
 BASE_DIR = Path(__file__).resolve().parent
 templates = Jinja2Templates(directory=str(BASE_DIR / "templates"))
+logger = logging.getLogger(__name__)
 
 
 def create_app(database_url: str | None = None) -> FastAPI:
@@ -57,7 +59,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(app: FastAPI):
         app.state.db = db_manager
-        app.state.db.create_all()
+        app.state.db.try_initialize()
         yield
 
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
@@ -68,8 +70,28 @@ def create_app(database_url: str | None = None) -> FastAPI:
         return templates.TemplateResponse("index.html", {"request": request, "title": settings.app_name})
 
     @app.get("/api/health")
-    def health() -> dict[str, str]:
-        return {"status": "ok"}
+    def health(request: Request) -> dict[str, object]:
+        db = request.app.state.db
+        return {
+            "status": "ok",
+            "database_initialized": db.initialized,
+            "database_configured": bool(db.database_url),
+        }
+
+    @app.get("/api/ready")
+    def ready(request: Request) -> dict[str, object]:
+        db = request.app.state.db
+        if not db.initialized:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "degraded",
+                    "message": "資料庫尚未完成初始化",
+                    "database_url_present": bool(db.database_url),
+                    "last_error": db.last_error,
+                },
+            )
+        return {"status": "ready"}
 
     @app.post("/api/meetings", response_model=MeetingResponse)
     def create_meeting(payload: MeetingCreate, session: Session = Depends(get_session)) -> MeetingResponse:
@@ -411,6 +433,16 @@ def create_app(database_url: str | None = None) -> FastAPI:
 
 
 def get_session(request: Request):
+    if not request.app.state.db.initialized:
+        request.app.state.db.try_initialize()
+    if not request.app.state.db.initialized:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "資料庫尚未就緒，請稍後再試",
+                "last_error": request.app.state.db.last_error,
+            },
+        )
     with request.app.state.db.session() as session:
         yield session
 
