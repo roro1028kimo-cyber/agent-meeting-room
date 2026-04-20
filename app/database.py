@@ -42,7 +42,8 @@ class DatabaseManager:
 
     def _migrate_schema(self) -> None:
         inspector = inspect(self.engine)
-        if "role_profiles" not in inspector.get_table_names():
+        table_names = set(inspector.get_table_names())
+        if "role_profiles" not in table_names:
             return
 
         columns = {column["name"] for column in inspector.get_columns("role_profiles")}
@@ -54,12 +55,58 @@ class DatabaseManager:
         if "max_output_tokens" not in columns:
             statements.append("ALTER TABLE role_profiles ADD COLUMN max_output_tokens INTEGER DEFAULT 80")
 
-        if not statements:
-            return
-
         with self.engine.begin() as connection:
             for statement in statements:
                 connection.execute(text(statement))
+            self._normalize_enum_values(connection, table_names)
+
+    def _normalize_enum_values(self, connection, table_names: set[str]) -> None:
+        updates = {
+            "role_profiles": {
+                "source": {
+                    "BUILTIN": "builtin",
+                    "CUSTOM": "custom",
+                    "OPENCLAW": "openclaw",
+                },
+                "provider": {
+                    "MOCK": "mock",
+                    "OPENAI": "openai",
+                    "ANTHROPIC": "anthropic",
+                    "GEMINI": "gemini",
+                },
+                "response_mode": {
+                    "CONCISE": "concise",
+                    "FULL_SUMMARY": "full_summary",
+                },
+            },
+            "meetings": {
+                "status": {
+                    "ACTIVE": "active",
+                    "CLOSED": "closed",
+                }
+            },
+            "meeting_messages": {
+                "message_type": {
+                    "SYSTEM": "system",
+                    "USER": "user",
+                    "AGENT": "agent",
+                    "SUMMARY": "summary",
+                }
+            },
+        }
+
+        for table_name, columns in updates.items():
+            if table_name not in table_names:
+                continue
+            existing_columns = {column["name"] for column in inspect(connection).get_columns(table_name)}
+            for column_name, mapping in columns.items():
+                if column_name not in existing_columns:
+                    continue
+                for old_value, new_value in mapping.items():
+                    connection.execute(
+                        text(f"UPDATE {table_name} SET {column_name} = :new_value WHERE {column_name} = :old_value"),
+                        {"new_value": new_value, "old_value": old_value},
+                    )
 
     def try_initialize(self) -> bool:
         try:

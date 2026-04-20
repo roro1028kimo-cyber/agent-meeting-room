@@ -46,6 +46,20 @@ class Base(DeclarativeBase):
     pass
 
 
+def enum_values(enum_cls: type[enum.Enum]) -> list[str]:
+    return [member.value for member in enum_cls]
+
+
+def value_enum(enum_cls: type[enum.Enum]) -> SAEnum:
+    return SAEnum(
+        enum_cls,
+        values_callable=enum_values,
+        native_enum=False,
+        validate_strings=True,
+        create_constraint=False,
+    )
+
+
 class AppSetting(Base):
     __tablename__ = "app_settings"
 
@@ -63,12 +77,12 @@ class RoleProfile(Base):
     description: Mapped[str] = mapped_column(String(255), default="")
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
     color: Mapped[str] = mapped_column(String(20), default="#6ee7b7")
-    source: Mapped[RoleSource] = mapped_column(SAEnum(RoleSource), default=RoleSource.BUILTIN)
-    provider: Mapped[ModelProvider] = mapped_column(SAEnum(ModelProvider), default=ModelProvider.MOCK)
+    source: Mapped[RoleSource] = mapped_column(value_enum(RoleSource), default=RoleSource.BUILTIN)
+    provider: Mapped[ModelProvider] = mapped_column(value_enum(ModelProvider), default=ModelProvider.MOCK)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
     model_override: Mapped[str | None] = mapped_column(String(120), nullable=True)
-    response_mode: Mapped[ResponseMode] = mapped_column(SAEnum(ResponseMode), default=ResponseMode.CONCISE)
+    response_mode: Mapped[ResponseMode] = mapped_column(value_enum(ResponseMode), default=ResponseMode.CONCISE)
     max_output_tokens: Mapped[int] = mapped_column(Integer, default=80)
     openclaw_agent_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
@@ -85,7 +99,7 @@ class Meeting(Base):
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     objective: Mapped[str] = mapped_column(Text, default="")
     context_text: Mapped[str] = mapped_column(Text, default="")
-    status: Mapped[MeetingStatus] = mapped_column(SAEnum(MeetingStatus), default=MeetingStatus.ACTIVE)
+    status: Mapped[MeetingStatus] = mapped_column(value_enum(MeetingStatus), default=MeetingStatus.ACTIVE)
     round_count: Mapped[int] = mapped_column(Integer, default=0)
     temporary_memory: Mapped[dict] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
@@ -116,7 +130,7 @@ class MeetingMessage(Base):
     meeting_id: Mapped[str] = mapped_column(ForeignKey("meetings.id"), nullable=False)
     role_profile_id: Mapped[int | None] = mapped_column(ForeignKey("role_profiles.id"), nullable=True)
     role_name: Mapped[str] = mapped_column(String(120), nullable=False)
-    message_type: Mapped[MessageType] = mapped_column(SAEnum(MessageType), nullable=False)
+    message_type: Mapped[MessageType] = mapped_column(value_enum(MessageType), nullable=False)
     round_number: Mapped[int] = mapped_column(Integer, default=0)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     meta_payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
