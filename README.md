@@ -1,62 +1,101 @@
-# Agent Meeting Room
+# README｜Agent Meeting Room 使用說明
 
-`Agent Meeting Room` 是一個單機優先、輕量化的多 agent 會議室。這一版不再走重 PM 流程，而是專注在一個穩定的會議介面，讓多個 AI 角色能圍繞同一個主題持續討論、保留暫存記憶，並在會後匯出成文字或 Python 檔案，再進一步存入長期記憶。
+> Agent Meeting Room 是一個單機優先、輕量化的多 agent 會議室。
+> 它不是重型 PM 平台，而是一個讓多個 AI 角色能穩定討論、收斂、匯出的會議介面。
 
-目前產品方向以 [agent.md](C:\codex\agent-meeting-room\agent.md:1) 為準，`OpenClaw` 被視為未來整合對象，而不是在此專案內重做它的 Gateway 或 Skills 系統。
+---
 
-## MVP 目標
+## 一、產品定位
 
-- 一個介面，多個 agent 開會
-- 單機優先，可直接用 SQLite 啟動
-- 設定頁可填 API、模型、角色與系統提示詞
-- 會議中使用暫存記憶，不做複雜工作流
-- 會後可匯出 `text` 與 `python` 格式並寫入本地檔案
-- 預留 OpenClaw 角色來源與整合欄位，但不重做 OpenClaw 本體
+| 欄位 | 內容 |
+|------|------|
+| **產品名稱** | Agent Meeting Room |
+| **核心定位** | 一個畫面、多個 agent、單機優先的會議室 |
+| **主要目的** | 讓使用者在同一個介面裡與多個 AI 角色持續開會 |
+| **MVP 範圍** | 角色會議、暫存記憶、會後匯出、長期記憶存檔 |
+| **不做的事** | 重 PM 流程、任務編排引擎、OpenClaw Gateway 重做 |
+| **規格基準** | [agent.md](C:\codex\agent-meeting-room\agent.md:1) |
 
-## 技術組成
+---
 
-- 前端：HTML、CSS、原生 JavaScript
-- 後端：Python、FastAPI
-- ORM：SQLAlchemy
-- 預設資料庫：SQLite
-- 可切換資料庫：PostgreSQL
-- 模型呼叫：OpenAI compatible API 或 mock 模式
+## 二、目前已完成能力
 
-## 目前功能
+### 核心能力
 
-- 建立會議並選擇參與角色
-- 內建多種會議角色
-- 可新增自訂角色與自訂提示詞
-- 逐輪輸入討論內容，產生多 agent 回覆
-- 顯示暫存記憶、最新摘要與長期記憶列表
-- 匯出會議為純文字或 Python 檔案
-- 匯出後自動建立記憶存檔紀錄
+1. 建立新會議
+2. 選擇多個與會角色
+3. 分開輸入「正式會議內容」與「使用者插話 / 補充」
+4. 讓多個 agent 逐輪發言
+5. 一般角色以短輸出模式回覆
+6. 主持人 / 執行官 / 記錄員可執行完整整理
+7. 保留暫存記憶
+8. 匯出 `text`
+9. 匯出 `python`
+10. 匯出後建立長期記憶存檔
+11. 終端機式單頁會議室 UI
 
-## 專案結構
+### 角色能力
+
+- 內建角色
+- 自訂角色
+- OpenClaw 預留角色來源
+- 可編輯角色提示詞、顏色、定位與啟用狀態
+- 每個角色可綁定 `provider`
+- 每個角色可覆寫 `model`
+- 每個角色可設定 `response_mode`
+- 每個角色可設定輸出 token 上限
+
+### 模型能力
+
+- `mock`
+- `openai`
+- `anthropic`
+- `gemini`
+
+---
+
+## 三、技術組成
+
+| 層級 | 技術 |
+|------|------|
+| 前端 | HTML + CSS + 原生 JavaScript |
+| 後端 | FastAPI |
+| ORM | SQLAlchemy |
+| 模板 | Jinja2 |
+| 預設資料庫 | SQLite |
+| 可切換資料庫 | PostgreSQL |
+| 匯出格式 | `text` / `python` |
+
+---
+
+## 四、專案結構
 
 ```text
 app/
   main.py
   config.py
   database.py
-  meeting_engine.py
   models.py
-  reports.py
   schemas.py
-  static/
-    app.js
-    style.css
+  meeting_engine.py
+  reports.py
   templates/
     index.html
+  static/
+    style.css
+    app.js
 tests/
 agent.md
 README.md
 REPORT.md
-requirements.txt
-railway.json
+.codex/
+  standards/
+    AGENT_MD_STANDARD.md
 ```
 
-## 本地啟動
+---
+
+## 五、本地啟動方式
 
 ### 1. 建立虛擬環境
 
@@ -79,13 +118,25 @@ pip install -r requirements.txt
 uvicorn app.main:create_app --factory --reload
 ```
 
-啟動後開啟：
+啟動後打開：
 
 - [http://127.0.0.1:8000](http://127.0.0.1:8000)
 
-## PostgreSQL 設定
+---
 
-如果你要改用 PostgreSQL，可以先設定環境變數：
+## 六、資料庫策略
+
+### 預設模式
+
+MVP 預設使用 SQLite。
+
+原因：
+
+- 本地啟動成本低
+- 不需要先配置外部服務
+- 方便快速測試會議流程
+
+### PostgreSQL 切換方式
 
 ```powershell
 $env:DATABASE_URL="postgresql+psycopg://postgres:postgres@localhost:5432/agent_meeting_room"
@@ -93,25 +144,55 @@ $env:DATABASE_URL="postgresql+psycopg://postgres:postgres@localhost:5432/agent_m
 
 之後再啟動 FastAPI 即可。
 
-## API / 模型設定
+---
 
-進入介面後的「設定」可以填入：
+## 七、設定頁可配置內容
 
-- `API Mode`
-- `API Key`
-- `Base URL`
-- `Model Name`
-- `Temperature`
-- `Max Tokens`
-- `OpenClaw Gateway URL`
-- `OpenClaw Notes`
+| 欄位 | 說明 |
+|------|------|
+| `API Mode` | `mock` 或 `live` |
+| `OpenAI API Key / Base URL / Model` | OpenAI 供應商設定 |
+| `Anthropic API Key / Base URL / Model` | Claude 供應商設定 |
+| `Gemini API Key / Base URL / Model` | Gemini 供應商設定 |
+| `Temperature` | 回應發散程度 |
+| `Short Reply Max Tokens` | 一般角色短輸出上限 |
+| `Full Summary Max Tokens` | 完整整理上限 |
+| `OpenClaw Gateway URL` | 預留 OpenClaw 接入位址 |
+| `OpenClaw Notes` | 預留整合備註 |
 
-其中：
+角色編輯區可另外配置：
 
-- `mock` 模式不需要 API Key，方便本地驗證流程
-- `openai_compatible` 模式可接 OpenAI 相容端點
+- `provider`
+- `model_override`
+- `response_mode`
+- `max_output_tokens`
+- `openclaw_agent_id`
 
-## 測試
+---
+
+## 八、主要 API
+
+| 方法 | 路徑 | 用途 |
+|------|------|------|
+| `GET` | `/api/health` | 健康檢查 |
+| `GET` | `/api/bootstrap` | 前端初始化 |
+| `GET` | `/api/settings` | 讀取設定 |
+| `PUT` | `/api/settings` | 儲存設定 |
+| `GET` | `/api/roles` | 讀取角色 |
+| `POST` | `/api/roles` | 建立角色 |
+| `PUT` | `/api/roles/{role_id}` | 更新角色 |
+| `GET` | `/api/meetings` | 讀取最近會議 |
+| `POST` | `/api/meetings` | 建立會議 |
+| `GET` | `/api/meetings/{meeting_id}` | 讀取單場會議 |
+| `POST` | `/api/meetings/{meeting_id}/rounds` | 執行一輪討論 |
+| `POST` | `/api/meetings/{meeting_id}/full-summary` | 產生完整整理 |
+| `POST` | `/api/meetings/{meeting_id}/close` | 關閉會議 |
+| `POST` | `/api/meetings/{meeting_id}/export` | 匯出會議 |
+| `GET` | `/api/memories` | 讀取長期記憶 |
+
+---
+
+## 九、測試方式
 
 ```powershell
 .\.venv\Scripts\python.exe -m unittest discover -s tests -v
@@ -119,31 +200,35 @@ $env:DATABASE_URL="postgresql+psycopg://postgres:postgres@localhost:5432/agent_m
 
 目前測試覆蓋：
 
-- 首頁可正常載入
-- Bootstrap 可回傳設定、角色、會議與記憶
-- 建立會議後可執行一輪討論
-- 匯出 Python 檔案後可寫入記憶存檔
+1. 首頁渲染
+2. bootstrap 初始化
+3. 建立會議並執行一輪
+4. 匯出與記憶存檔
 
-## 主要 API
+---
 
-- `GET /api/health`
-- `GET /api/bootstrap`
-- `GET /api/settings`
-- `PUT /api/settings`
-- `GET /api/roles`
-- `POST /api/roles`
-- `PUT /api/roles/{role_id}`
-- `GET /api/meetings`
-- `POST /api/meetings`
-- `GET /api/meetings/{meeting_id}`
-- `POST /api/meetings/{meeting_id}/rounds`
-- `POST /api/meetings/{meeting_id}/close`
-- `POST /api/meetings/{meeting_id}/export`
-- `GET /api/memories`
+## 十、與 OpenClaw 的關係
 
-## 後續方向
+### 本專案會做
 
-- 強化前端閱讀性與會議臨場感
-- 將 OpenClaw 角色載入流程接到既有 Gateway
-- 支援更完整的本地長期記憶策略
-- 補上角色技能包與角色匯入機制
+- 預留 OpenClaw 角色來源
+- 預留 Gateway URL 欄位
+- 預留 Agent ID 映射欄位
+
+### 本專案不做
+
+- 重做 OpenClaw Gateway
+- 重做 OpenClaw Skills 系統
+- 重做 OpenClaw agent 管理體系
+
+---
+
+## 十一、文件同步規則
+
+本專案所有核心 Markdown 文件都應與 [agent.md](C:\codex\agent-meeting-room\agent.md:1) 保持一致，包括：
+
+- [README.md](C:\codex\agent-meeting-room\README.md:1)
+- [REPORT.md](C:\codex\agent-meeting-room\REPORT.md:1)
+- [AGENT_MD_STANDARD.md](C:\codex\agent-meeting-room\.codex\standards\AGENT_MD_STANDARD.md:1)
+
+若規格有重大變更，以上文件必須一起更新。

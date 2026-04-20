@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +18,8 @@ from app.models import (
     MeetingStatus,
     MemoryArchive,
     MessageType,
+    ModelProvider,
+    ResponseMode,
     RoleProfile,
     RoleSource,
 )
@@ -24,14 +27,29 @@ from app.models import (
 
 DEFAULT_SETTINGS = {
     "api_mode": "mock",
-    "api_key": "",
-    "base_url": "https://api.openai.com/v1",
-    "model_name": "gpt-4.1-mini",
-    "temperature": 0.7,
-    "max_tokens": 700,
+    "openai_api_key": "",
+    "openai_base_url": "https://api.openai.com/v1",
+    "openai_model": "gpt-4.1-mini",
+    "anthropic_api_key": "",
+    "anthropic_base_url": "https://api.anthropic.com",
+    "anthropic_model": "claude-sonnet-4-20250514",
+    "gemini_api_key": "",
+    "gemini_base_url": "https://generativelanguage.googleapis.com/v1beta",
+    "gemini_model": "gemini-2.5-flash",
+    "temperature": 0.35,
+    "short_reply_max_tokens": 48,
+    "full_summary_max_tokens": 360,
     "openclaw_enabled": False,
     "openclaw_gateway_url": "",
     "openclaw_notes": "",
+}
+
+
+LEGACY_SETTING_MAP = {
+    "api_key": "openai_api_key",
+    "base_url": "openai_base_url",
+    "model_name": "openai_model",
+    "max_tokens": "short_reply_max_tokens",
 }
 
 
@@ -42,18 +60,14 @@ BUILTIN_ROLES = [
         "description": "控場、指定順序、最後收斂結論。",
         "color": "#7dd3fc",
         "sort_order": 1,
-        "system_prompt": """你是會議主持人。
-你的任務是：
-1. 控制討論節奏。
-2. 幫大家收斂焦點。
-3. 在最後給出短而清楚的本輪結論。
-
-發言要求：
-- 使用繁體中文。
-- 先說結論，再補充。
-- 盡量控制在 4 到 8 句。
-- 不要假裝知道不存在的事實。
-- 不要做 PM 流程式長篇報告。""",
+        "provider": ModelProvider.MOCK,
+        "response_mode": ResponseMode.FULL_SUMMARY,
+        "max_output_tokens": 220,
+        "system_prompt": (
+            "你是主持人。"
+            "平時發言只保留重點，不要客套，不要模仿人類聊天。"
+            "請優先收斂討論、指出焦點與下一步。"
+        ),
     },
     {
         "role_key": "planner",
@@ -61,14 +75,10 @@ BUILTIN_ROLES = [
         "description": "把主題拆成方向、步驟與可行方案。",
         "color": "#c4b5fd",
         "sort_order": 2,
-        "system_prompt": """你是規劃師。
-你的任務是把議題拆成具體方向、步驟與選項。
-
-發言要求：
-- 使用繁體中文。
-- 先說最可行的方向。
-- 盡量給 2 到 4 個步驟。
-- 短句、清楚、可執行。""",
+        "provider": ModelProvider.MOCK,
+        "response_mode": ResponseMode.CONCISE,
+        "max_output_tokens": 48,
+        "system_prompt": "你是規劃師。只說結構、步驟、下一步，不要鋪陳。",
     },
     {
         "role_key": "skeptic",
@@ -76,14 +86,10 @@ BUILTIN_ROLES = [
         "description": "挑戰假設，避免過度樂觀。",
         "color": "#fca5a5",
         "sort_order": 3,
-        "system_prompt": """你是反方辯手。
-你的任務是挑戰討論中的假設，指出過度樂觀、模糊或風險。
-
-發言要求：
-- 使用繁體中文。
-- 直接指出問題。
-- 不要情緒化。
-- 每次至少提出一個需要重想的點。""",
+        "provider": ModelProvider.MOCK,
+        "response_mode": ResponseMode.CONCISE,
+        "max_output_tokens": 48,
+        "system_prompt": "你是反方辯手。只指出最值得懷疑的一點與理由。",
     },
     {
         "role_key": "risk_officer",
@@ -91,13 +97,10 @@ BUILTIN_ROLES = [
         "description": "指出風險、依賴與失敗點。",
         "color": "#fbbf24",
         "sort_order": 4,
-        "system_prompt": """你是風險官。
-你的任務是找出可能失敗的地方、依賴條件與需要先確認的因素。
-
-發言要求：
-- 使用繁體中文。
-- 列出最重要的 2 到 3 個風險。
-- 若有風險，盡量附簡短備案。""",
+        "provider": ModelProvider.MOCK,
+        "response_mode": ResponseMode.CONCISE,
+        "max_output_tokens": 48,
+        "system_prompt": "你是風險官。只列關鍵風險、依賴與備案。",
     },
     {
         "role_key": "executor",
@@ -105,13 +108,10 @@ BUILTIN_ROLES = [
         "description": "把討論轉成可落地動作。",
         "color": "#6ee7b7",
         "sort_order": 5,
-        "system_prompt": """你是執行官。
-你的任務是把目前討論轉成可以立刻採取的下一步。
-
-發言要求：
-- 使用繁體中文。
-- 優先講可立刻做的事。
-- 盡量整理成 3 到 5 個行動點。""",
+        "provider": ModelProvider.MOCK,
+        "response_mode": ResponseMode.FULL_SUMMARY,
+        "max_output_tokens": 220,
+        "system_prompt": "你是執行官。優先輸出可行動項，不要解釋太多背景。",
     },
     {
         "role_key": "recorder",
@@ -119,13 +119,10 @@ BUILTIN_ROLES = [
         "description": "整理關鍵觀點與本輪共識。",
         "color": "#fdba74",
         "sort_order": 6,
-        "system_prompt": """你是記錄員。
-你的任務是把目前會議內容整理成短摘要，保留共識、分歧與下一步。
-
-發言要求：
-- 使用繁體中文。
-- 條列清楚。
-- 避免加入你自己新的推論。""",
+        "provider": ModelProvider.MOCK,
+        "response_mode": ResponseMode.FULL_SUMMARY,
+        "max_output_tokens": 220,
+        "system_prompt": "你是記錄員。負責把會議內容整理成可保存的結論。",
     },
     {
         "role_key": "researcher",
@@ -133,13 +130,10 @@ BUILTIN_ROLES = [
         "description": "指出背景知識缺口與需要查證的資訊。",
         "color": "#93c5fd",
         "sort_order": 7,
-        "system_prompt": """你是研究員。
-你的任務是指出目前資訊缺口，以及應該補查什麼資料才能讓討論更可靠。
-
-發言要求：
-- 使用繁體中文。
-- 重點放在缺什麼資訊。
-- 不要假裝你已經查證完成。""",
+        "provider": ModelProvider.MOCK,
+        "response_mode": ResponseMode.CONCISE,
+        "max_output_tokens": 48,
+        "system_prompt": "你是研究員。只指出缺口與要查什麼，不要假裝查完。",
     },
     {
         "role_key": "product_advisor",
@@ -147,13 +141,10 @@ BUILTIN_ROLES = [
         "description": "從使用者價值與產品角度提出看法。",
         "color": "#f9a8d4",
         "sort_order": 8,
-        "system_prompt": """你是產品顧問。
-你的任務是從使用者價值、定位與體驗角度給建議。
-
-發言要求：
-- 使用繁體中文。
-- 聚焦使用者會不會看懂、想用、持續使用。
-- 用簡單的產品語言。""",
+        "provider": ModelProvider.MOCK,
+        "response_mode": ResponseMode.CONCISE,
+        "max_output_tokens": 48,
+        "system_prompt": "你是產品顧問。只談使用者價值、理解門檻與採用意願。",
     },
 ]
 
@@ -161,11 +152,18 @@ BUILTIN_ROLES = [
 @dataclass
 class RuntimeSettings:
     api_mode: str
-    api_key: str
-    base_url: str
-    model_name: str
+    openai_api_key: str
+    openai_base_url: str
+    openai_model: str
+    anthropic_api_key: str
+    anthropic_base_url: str
+    anthropic_model: str
+    gemini_api_key: str
+    gemini_base_url: str
+    gemini_model: str
     temperature: float
-    max_tokens: int
+    short_reply_max_tokens: int
+    full_summary_max_tokens: int
     openclaw_enabled: bool
     openclaw_gateway_url: str
     openclaw_notes: str
@@ -176,10 +174,7 @@ def ensure_defaults(session: Session) -> None:
         if session.get(AppSetting, key) is None:
             session.add(AppSetting(key=key, value=value))
 
-    existing = {
-        role.role_key: role
-        for role in session.execute(select(RoleProfile)).scalars().all()
-    }
+    existing = {role.role_key: role for role in session.execute(select(RoleProfile)).scalars().all()}
     for definition in BUILTIN_ROLES:
         role = existing.get(definition["role_key"])
         if role is None:
@@ -191,8 +186,12 @@ def ensure_defaults(session: Session) -> None:
                     system_prompt=definition["system_prompt"],
                     color=definition["color"],
                     source=RoleSource.BUILTIN,
+                    provider=definition["provider"],
                     enabled=True,
                     is_builtin=True,
+                    model_override=None,
+                    response_mode=definition["response_mode"],
+                    max_output_tokens=definition["max_output_tokens"],
                     sort_order=definition["sort_order"],
                 )
             )
@@ -201,25 +200,38 @@ def ensure_defaults(session: Session) -> None:
             role.description = definition["description"]
             role.system_prompt = definition["system_prompt"]
             role.color = definition["color"]
+            role.provider = definition["provider"]
+            role.response_mode = definition["response_mode"]
+            role.max_output_tokens = definition["max_output_tokens"]
             role.sort_order = definition["sort_order"]
     session.commit()
 
 
 def load_runtime_settings(session: Session) -> RuntimeSettings:
-    settings = {key: value for key, value in DEFAULT_SETTINGS.items()}
+    values = dict(DEFAULT_SETTINGS)
     for item in session.execute(select(AppSetting)).scalars().all():
-        settings[item.key] = item.value
-    return RuntimeSettings(**settings)
+        if item.key in values:
+            values[item.key] = item.value
+        elif item.key in LEGACY_SETTING_MAP:
+            values[LEGACY_SETTING_MAP[item.key]] = item.value
+    return RuntimeSettings(**values)
 
 
 def settings_to_dict(settings: RuntimeSettings) -> dict:
     return {
         "api_mode": settings.api_mode,
-        "api_key": settings.api_key,
-        "base_url": settings.base_url,
-        "model_name": settings.model_name,
+        "openai_api_key": settings.openai_api_key,
+        "openai_base_url": settings.openai_base_url,
+        "openai_model": settings.openai_model,
+        "anthropic_api_key": settings.anthropic_api_key,
+        "anthropic_base_url": settings.anthropic_base_url,
+        "anthropic_model": settings.anthropic_model,
+        "gemini_api_key": settings.gemini_api_key,
+        "gemini_base_url": settings.gemini_base_url,
+        "gemini_model": settings.gemini_model,
         "temperature": settings.temperature,
-        "max_tokens": settings.max_tokens,
+        "short_reply_max_tokens": settings.short_reply_max_tokens,
+        "full_summary_max_tokens": settings.full_summary_max_tokens,
         "openclaw_enabled": settings.openclaw_enabled,
         "openclaw_gateway_url": settings.openclaw_gateway_url,
         "openclaw_notes": settings.openclaw_notes,
@@ -230,8 +242,7 @@ def update_settings(session: Session, payload: dict) -> dict:
     for key, value in payload.items():
         row = session.get(AppSetting, key)
         if row is None:
-            row = AppSetting(key=key, value=value)
-            session.add(row)
+            session.add(AppSetting(key=key, value=value))
         else:
             row.value = value
     session.commit()
@@ -265,12 +276,18 @@ def create_meeting(session: Session, title: str, objective: str, context_text: s
         objective=objective,
         context_text=context_text,
         status=MeetingStatus.ACTIVE,
-        temporary_memory={"notes": [], "latest_summary": "", "latest_user_input": ""},
+        temporary_memory={
+            "notes": [],
+            "latest_summary": "",
+            "latest_formal_input": "",
+            "latest_note_input": "",
+            "active_speaker": None,
+        },
     )
     session.add(meeting)
     session.flush()
 
-    seat = 1
+    seat_order = 1
     for role in available_roles:
         if role.id not in selected_role_ids:
             continue
@@ -278,11 +295,11 @@ def create_meeting(session: Session, title: str, objective: str, context_text: s
             MeetingParticipant(
                 meeting_id=meeting.id,
                 role_profile_id=role.id,
-                seat_order=seat,
+                seat_order=seat_order,
                 enabled=True,
             )
         )
-        seat += 1
+        seat_order += 1
 
     session.add(
         MeetingMessage(
@@ -291,8 +308,8 @@ def create_meeting(session: Session, title: str, objective: str, context_text: s
             role_name="系統",
             message_type=MessageType.SYSTEM,
             round_number=0,
-            content="會議已建立，請輸入主題補充後開始第一輪討論。",
-            meta_payload=None,
+            content="會議已建立。請輸入正式討論內容後開始下一輪。",
+            meta_payload={"kind": "system_bootstrap"},
         )
     )
     session.commit()
@@ -301,16 +318,14 @@ def create_meeting(session: Session, title: str, objective: str, context_text: s
 
 
 def list_recent_meetings(session: Session) -> list[Meeting]:
-    statement = select(Meeting).order_by(Meeting.updated_at.desc()).limit(20)
-    return session.execute(statement).scalars().all()
+    return session.execute(select(Meeting).order_by(Meeting.updated_at.desc()).limit(20)).scalars().all()
 
 
 def list_archives(session: Session) -> list[MemoryArchive]:
-    statement = select(MemoryArchive).order_by(MemoryArchive.created_at.desc()).limit(50)
-    return session.execute(statement).scalars().all()
+    return session.execute(select(MemoryArchive).order_by(MemoryArchive.created_at.desc()).limit(50)).scalars().all()
 
 
-def run_meeting_round(session: Session, meeting_id: str, user_input: str) -> Meeting:
+def run_meeting_round(session: Session, meeting_id: str, formal_input: str, note_input: str) -> Meeting:
     meeting = get_meeting(session, meeting_id)
     if meeting is None:
         raise ValueError("Meeting not found.")
@@ -319,34 +334,60 @@ def run_meeting_round(session: Session, meeting_id: str, user_input: str) -> Mee
 
     runtime = load_runtime_settings(session)
     round_number = meeting.round_count + 1
-    trimmed_input = user_input.strip()
+    trimmed_formal = formal_input.strip()
+    trimmed_note = note_input.strip()
+
+    if not trimmed_formal and not trimmed_note:
+        raise ValueError("Please provide formal input or note input.")
 
     memory = dict(meeting.temporary_memory or {})
     memory.setdefault("notes", [])
+    memory["active_speaker"] = None
 
-    if trimmed_input:
-        memory["latest_user_input"] = trimmed_input
-        memory["notes"].append(f"使用者補充：{trimmed_input}")
+    if trimmed_formal:
+        memory["latest_formal_input"] = trimmed_formal
+        memory["notes"].append(f"正式輸入｜{trimmed_formal}")
         session.add(
             MeetingMessage(
                 meeting_id=meeting.id,
                 role_profile_id=None,
-                role_name="使用者",
+                role_name="正式輸入",
                 message_type=MessageType.USER,
                 round_number=round_number,
-                content=trimmed_input,
-                meta_payload=None,
+                content=trimmed_formal,
+                meta_payload={"kind": "formal_input"},
+            )
+        )
+
+    if trimmed_note:
+        memory["latest_note_input"] = trimmed_note
+        memory["notes"].append(f"插話｜{trimmed_note}")
+        session.add(
+            MeetingMessage(
+                meeting_id=meeting.id,
+                role_profile_id=None,
+                role_name="使用者插話",
+                message_type=MessageType.USER,
+                round_number=round_number,
+                content=trimmed_note,
+                meta_payload={"kind": "note_input"},
             )
         )
 
     transcript = build_transcript(meeting)
-    participant_roles = [participant.role_profile for participant in sorted(meeting.participants, key=lambda item: item.seat_order) if participant.enabled]
+    user_context = build_user_context(trimmed_formal, trimmed_note)
+    participant_roles = [
+        participant.role_profile
+        for participant in sorted(meeting.participants, key=lambda item: item.seat_order)
+        if participant.enabled
+    ]
 
     generated_messages: list[tuple[RoleProfile, str]] = []
     for role in participant_roles:
-        reply = generate_role_reply(runtime, role, meeting, transcript, trimmed_input)
+        reply = generate_role_reply(runtime, role, meeting, transcript, user_context, concise=True)
         generated_messages.append((role, reply))
         transcript.append({"role": role.display_name, "content": reply})
+        memory["active_speaker"] = role.display_name
         session.add(
             MeetingMessage(
                 meeting_id=meeting.id,
@@ -355,25 +396,58 @@ def run_meeting_round(session: Session, meeting_id: str, user_input: str) -> Mee
                 message_type=MessageType.AGENT,
                 round_number=round_number,
                 content=reply,
-                meta_payload={"source": role.source.value},
+                meta_payload={"source": role.source.value, "provider": role.provider.value, "mode": "concise"},
             )
         )
 
-    summary_text = build_round_summary(meeting, generated_messages, trimmed_input)
-    meeting.round_count = round_number
+    summary_text = build_round_summary(meeting, generated_messages, trimmed_formal, trimmed_note)
     memory["latest_summary"] = summary_text
-    memory["notes"].append(f"第 {round_number} 輪摘要：{summary_text}")
+    memory["notes"].append(f"摘要｜{extract_first_sentence(summary_text)}")
+    meeting.round_count = round_number
     meeting.temporary_memory = memory
 
     session.add(
         MeetingMessage(
             meeting_id=meeting.id,
             role_profile_id=None,
-            role_name="會議室",
+            role_name="會議室摘要",
             message_type=MessageType.SUMMARY,
             round_number=round_number,
             content=summary_text,
             meta_payload={"kind": "round_summary"},
+        )
+    )
+    session.commit()
+    session.expire_all()
+    return get_meeting(session, meeting.id)
+
+
+def generate_full_summary(session: Session, meeting_id: str, force_provider: ModelProvider | None = None) -> Meeting:
+    meeting = get_meeting(session, meeting_id)
+    if meeting is None:
+        raise ValueError("Meeting not found.")
+
+    runtime = load_runtime_settings(session)
+    summary_role = select_summary_role(meeting, force_provider)
+    transcript = build_transcript(meeting)
+    content = generate_role_reply(runtime, summary_role, meeting, transcript, "請整理完整會議內容。", concise=False)
+
+    memory = dict(meeting.temporary_memory or {})
+    memory.setdefault("notes", [])
+    memory["active_speaker"] = summary_role.display_name
+    memory["latest_summary"] = content
+    memory["notes"].append(f"完整整理｜{extract_first_sentence(content)}")
+    meeting.temporary_memory = memory
+
+    session.add(
+        MeetingMessage(
+            meeting_id=meeting.id,
+            role_profile_id=summary_role.id,
+            role_name=f"{summary_role.display_name}完整整理",
+            message_type=MessageType.SUMMARY,
+            round_number=meeting.round_count,
+            content=content,
+            meta_payload={"kind": "full_summary", "provider": summary_role.provider.value},
         )
     )
     session.commit()
@@ -426,12 +500,13 @@ def export_meeting(session: Session, meeting_id: str, export_format: str, archiv
                 meeting_id=meeting.id,
                 export_format=export_format,
                 file_path=file_path,
-                summary=meeting.temporary_memory.get("latest_summary", ""),
+                summary=(meeting.temporary_memory or {}).get("latest_summary", ""),
             )
         )
         memory = dict(meeting.temporary_memory or {})
-        memory.setdefault("notes", [])
-        memory["notes"].append(f"已匯出 {export_format} 檔案：{file_path}")
+        notes = list(memory.get("notes", []))
+        notes.append(f"匯出｜{export_format} -> {file_path}")
+        memory["notes"] = notes
         meeting.temporary_memory = memory
         session.commit()
 
@@ -444,107 +519,362 @@ def export_meeting(session: Session, meeting_id: str, export_format: str, archiv
     }
 
 
+def select_summary_role(meeting: Meeting, force_provider: ModelProvider | None = None) -> RoleProfile:
+    roles = [
+        participant.role_profile
+        for participant in sorted(meeting.participants, key=lambda item: item.seat_order)
+        if participant.enabled
+    ]
+    summary_roles = [role for role in roles if role.response_mode == ResponseMode.FULL_SUMMARY]
+    if force_provider is not None:
+        summary_roles = [role for role in summary_roles if role.provider == force_provider] or summary_roles
+    if summary_roles:
+        return summary_roles[0]
+    return roles[0]
+
+
 def build_transcript(meeting: Meeting) -> list[dict[str, str]]:
     items = [
         {"role": "會議主題", "content": meeting.title},
         {"role": "會議目標", "content": meeting.objective or "未指定"},
         {"role": "背景", "content": meeting.context_text or "未提供"},
     ]
-    for message in sorted(meeting.messages, key=lambda item: (item.round_number, item.id))[-12:]:
+    for message in sorted(meeting.messages, key=lambda item: (item.round_number, item.id))[-10:]:
         items.append({"role": message.role_name, "content": message.content})
     return items
 
 
-def generate_role_reply(runtime: RuntimeSettings, role: RoleProfile, meeting: Meeting, transcript: list[dict], user_input: str) -> str:
-    if runtime.api_mode == "openai_compatible" and runtime.api_key:
+def build_user_context(formal_input: str, note_input: str) -> str:
+    parts = []
+    if formal_input:
+        parts.append(f"正式輸入：{formal_input}")
+    if note_input:
+        parts.append(f"使用者插話：{note_input}")
+    return "\n".join(parts)
+
+
+def generate_role_reply(
+    runtime: RuntimeSettings,
+    role: RoleProfile,
+    meeting: Meeting,
+    transcript: list[dict],
+    user_input: str,
+    concise: bool,
+) -> str:
+    if runtime.api_mode != "mock":
         try:
-            return call_openai_compatible(runtime, role, meeting, transcript, user_input)
+            text = call_provider(runtime, role, meeting, transcript, user_input, concise)
+            return post_process_reply(text, concise)
         except Exception as exc:
-            return build_fallback_reply(role, meeting, user_input, transcript, reason=f"模型呼叫失敗：{exc}")
-    return build_fallback_reply(role, meeting, user_input, transcript)
+            return build_fallback_reply(role, meeting, user_input, transcript, concise, reason=f"模型呼叫失敗：{exc}")
+    return build_fallback_reply(role, meeting, user_input, transcript, concise)
 
 
-def call_openai_compatible(runtime: RuntimeSettings, role: RoleProfile, meeting: Meeting, transcript: list[dict], user_input: str) -> str:
-    messages = [
-        {"role": "system", "content": role.system_prompt},
-        {
-            "role": "user",
-            "content": "\n".join(
-                [
-                    f"會議主題：{meeting.title}",
-                    f"會議目標：{meeting.objective or '未指定'}",
-                    f"背景：{meeting.context_text or '未提供'}",
-                    f"本輪使用者輸入：{user_input or '無'}",
-                    "最近討論：",
-                    *[f"- {item['role']}：{item['content']}" for item in transcript[-10:]],
-                    "",
-                    "請你以你的角色定位發言，使用繁體中文，控制在 4 到 8 句。",
-                ]
-            ),
-        },
-    ]
+def call_provider(
+    runtime: RuntimeSettings,
+    role: RoleProfile,
+    meeting: Meeting,
+    transcript: list[dict],
+    user_input: str,
+    concise: bool,
+) -> str:
+    if role.provider == ModelProvider.OPENAI:
+        return call_openai(runtime, role, meeting, transcript, user_input, concise)
+    if role.provider == ModelProvider.ANTHROPIC:
+        return call_anthropic(runtime, role, meeting, transcript, user_input, concise)
+    if role.provider == ModelProvider.GEMINI:
+        return call_gemini(runtime, role, meeting, transcript, user_input, concise)
+    raise ValueError(f"Unsupported provider: {role.provider.value}")
+
+
+def resolve_provider_model(runtime: RuntimeSettings, role: RoleProfile) -> tuple[str, str, str]:
+    if role.provider == ModelProvider.OPENAI:
+        return runtime.openai_base_url.rstrip("/"), runtime.openai_api_key, role.model_override or runtime.openai_model
+    if role.provider == ModelProvider.ANTHROPIC:
+        return runtime.anthropic_base_url.rstrip("/"), runtime.anthropic_api_key, role.model_override or runtime.anthropic_model
+    if role.provider == ModelProvider.GEMINI:
+        return runtime.gemini_base_url.rstrip("/"), runtime.gemini_api_key, role.model_override or runtime.gemini_model
+    return "", "", role.model_override or "mock"
+
+
+def resolve_token_budget(runtime: RuntimeSettings, role: RoleProfile, concise: bool) -> int:
+    if concise:
+        role_cap = role.max_output_tokens or runtime.short_reply_max_tokens
+        return min(role_cap, runtime.short_reply_max_tokens)
+    role_cap = role.max_output_tokens or runtime.full_summary_max_tokens
+    return max(role_cap, runtime.full_summary_max_tokens)
+
+
+def clip_prompt_text(value: str, limit: int) -> str:
+    compact = re.sub(r"\s+", " ", (value or "").strip())
+    return compact[:limit]
+
+
+def build_role_request_prompt(role: RoleProfile, meeting: Meeting, transcript: list[dict], user_input: str, concise: bool) -> str:
+    recent = "\n".join(
+        [f"- {clip_prompt_text(item['role'], 10)}：{clip_prompt_text(item['content'], 24)}" for item in transcript[-6:]]
+    )
+    if concise:
+        output_rule = (
+            "請用繁體中文。禁止寒暄、禁止鋪陳、禁止模仿人類聊天。"
+            "你不是在寫文章，而是在終端機會議中回報。"
+            "只輸出三行：重點｜...、邏輯｜...、結論｜..."
+            "每行 12 字內，寧短勿長，避免重複背景。"
+        )
+    else:
+        output_rule = (
+            "請用繁體中文輸出完整會議整理。"
+            "請使用五行：主題｜...、共識｜...、分歧｜...、風險｜...、下一步｜..."
+            "保持精簡，但要可保存。"
+        )
+    return "\n".join(
+        [
+            f"角色：{role.display_name}",
+            f"會議主題：{clip_prompt_text(meeting.title, 30)}",
+            f"會議目標：{clip_prompt_text(meeting.objective or '未指定', 30)}",
+            f"背景：{clip_prompt_text(meeting.context_text or '未提供', 60)}",
+            f"本輪輸入：{clip_prompt_text(user_input or '無', 60)}",
+            "最近討論：",
+            recent or "- 尚無",
+            "",
+            output_rule,
+        ]
+    )
+
+
+def call_openai(
+    runtime: RuntimeSettings,
+    role: RoleProfile,
+    meeting: Meeting,
+    transcript: list[dict],
+    user_input: str,
+    concise: bool,
+) -> str:
+    base_url, api_key, model_name = resolve_provider_model(runtime, role)
+    if not api_key:
+        raise ValueError("OpenAI API key is missing.")
 
     response = httpx.post(
-        f"{runtime.base_url.rstrip('/')}/chat/completions",
+        f"{base_url}/chat/completions",
         headers={
-            "Authorization": f"Bearer {runtime.api_key}",
+            "Authorization": f"Bearer {api_key}",
             "Content-Type": "application/json",
         },
         json={
-            "model": role.model_override or runtime.model_name,
-            "messages": messages,
+            "model": model_name,
+            "messages": [
+                {"role": "system", "content": role.system_prompt},
+                {"role": "user", "content": build_role_request_prompt(role, meeting, transcript, user_input, concise)},
+            ],
             "temperature": runtime.temperature,
-            "max_tokens": runtime.max_tokens,
-            "stream": False,
+            "max_tokens": resolve_token_budget(runtime, role, concise),
+        },
+        timeout=60.0,
+    )
+    response.raise_for_status()
+    return response.json()["choices"][0]["message"]["content"].strip()
+
+
+def call_anthropic(
+    runtime: RuntimeSettings,
+    role: RoleProfile,
+    meeting: Meeting,
+    transcript: list[dict],
+    user_input: str,
+    concise: bool,
+) -> str:
+    base_url, api_key, model_name = resolve_provider_model(runtime, role)
+    if not api_key:
+        raise ValueError("Anthropic API key is missing.")
+
+    response = httpx.post(
+        f"{base_url}/v1/messages",
+        headers={
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json={
+            "model": model_name,
+            "system": role.system_prompt,
+            "max_tokens": resolve_token_budget(runtime, role, concise),
+            "messages": [
+                {
+                    "role": "user",
+                    "content": build_role_request_prompt(role, meeting, transcript, user_input, concise),
+                }
+            ],
         },
         timeout=60.0,
     )
     response.raise_for_status()
     data = response.json()
-    return data["choices"][0]["message"]["content"].strip()
+    return "".join(item.get("text", "") for item in data.get("content", []) if item.get("type") == "text").strip()
 
 
-def build_fallback_reply(role: RoleProfile, meeting: Meeting, user_input: str, transcript: list[dict], reason: str | None = None) -> str:
+def call_gemini(
+    runtime: RuntimeSettings,
+    role: RoleProfile,
+    meeting: Meeting,
+    transcript: list[dict],
+    user_input: str,
+    concise: bool,
+) -> str:
+    base_url, api_key, model_name = resolve_provider_model(runtime, role)
+    if not api_key:
+        raise ValueError("Gemini API key is missing.")
+
+    response = httpx.post(
+        f"{base_url}/models/{model_name}:generateContent",
+        headers={
+            "x-goog-api-key": api_key,
+            "Content-Type": "application/json",
+        },
+        json={
+            "systemInstruction": {"parts": [{"text": role.system_prompt}]},
+            "contents": [
+                {
+                    "parts": [
+                        {"text": build_role_request_prompt(role, meeting, transcript, user_input, concise)}
+                    ]
+                }
+            ],
+            "generationConfig": {
+                "temperature": runtime.temperature,
+                "maxOutputTokens": resolve_token_budget(runtime, role, concise),
+            },
+        },
+        timeout=60.0,
+    )
+    response.raise_for_status()
+    data = response.json()
+    parts = data.get("candidates", [{}])[0].get("content", {}).get("parts", [])
+    return "".join(part.get("text", "") for part in parts).strip()
+
+
+def post_process_reply(text: str, concise: bool) -> str:
+    cleaned = re.sub(r"\n{3,}", "\n\n", text.strip())
+    if concise:
+        return compress_concise_output(cleaned)
+    lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+    trimmed = lines[:5]
+    if len(trimmed) < 5:
+        return compress_full_summary(cleaned)
+    return "\n".join(line[:80] for line in trimmed)
+
+
+def compress_concise_output(text: str) -> str:
+    lines = [line.strip("-• ").strip() for line in text.splitlines() if line.strip()]
+    labels = ["重點", "邏輯", "結論"]
+    normalized: list[str] = []
+
+    if len(lines) >= 3 and all("｜" in line for line in lines[:3]):
+        for label, line in zip(labels, lines[:3]):
+            content = line.split("｜", 1)[1].strip() if "｜" in line else line
+            normalized.append(f"{label}｜{content[:12]}")
+        return "\n".join(normalized)
+
+    fragments = [fragment.strip() for fragment in re.split(r"[。！？\n]+", text) if fragment.strip()]
+    while len(fragments) < 3:
+        fragments.append("無")
+    return "\n".join(
+        [
+            f"重點｜{fragments[0][:12]}",
+            f"邏輯｜{fragments[1][:12]}",
+            f"結論｜{fragments[2][:12]}",
+        ]
+    )
+
+
+def compress_full_summary(text: str) -> str:
+    fragments = [fragment.strip() for fragment in re.split(r"[。！？\n]+", text) if fragment.strip()]
+    while len(fragments) < 5:
+        fragments.append("無")
+    labels = ["主題", "共識", "分歧", "風險", "下一步"]
+    return "\n".join(f"{label}｜{fragment[:60]}" for label, fragment in zip(labels, fragments[:5]))
+
+
+def build_fallback_reply(
+    role: RoleProfile,
+    meeting: Meeting,
+    user_input: str,
+    transcript: list[dict],
+    concise: bool,
+    reason: str | None = None,
+) -> str:
     latest_points = [item["content"] for item in transcript[-3:]]
-    context_hint = "；".join(latest_points) if latest_points else "目前討論剛開始。"
+    context_hint = "；".join(latest_points) if latest_points else "討論剛開始"
+    topic_hint = user_input or "先根據目前脈絡往前推進"
 
-    style_map = {
-        "chair": f"結論：本輪建議先聚焦在「{meeting.title}」，避免討論擴散。觀察：{context_hint}。下一步：請每位角色只補最重要的一點。",
-        "planner": f"我建議先把「{meeting.title}」拆成目標、限制、下一步三塊。依目前內容看，先處理：{user_input or '補齊背景'}。",
-        "skeptic": f"我想挑戰一個假設：我們可能把議題講得太快。若不先確認背景與限制，後面容易各說各話。",
-        "risk_officer": f"目前最值得先注意的是資訊不足、範圍過大與執行落差。若不先收斂，這場會議很容易失焦。",
-        "executor": f"如果要讓這輪討論往前走，我建議先做三件事：定義目標、確認參與角色、產出一版短結論。",
-        "recorder": f"目前可先記下三個重點：會議主題是「{meeting.title}」、使用者最新補充是「{user_input or '尚無'}」、本輪需要收斂下一步。",
-        "researcher": "目前最大的問題不是答案不夠，而是缺少背景資訊。建議先補：定義、限制、使用情境、成功標準。",
-        "product_advisor": f"從產品角度看，這場會議要先確認使用者真的在意什麼。若主題是「{meeting.title}」，那最需要先講清楚的是價值。",
+    concise_map = {
+        "chair": f"重點｜先收斂主題\n邏輯｜焦點={topic_hint[:16]}\n結論｜每人只補一點",
+        "planner": f"重點｜先拆結構\n邏輯｜目標/限制/下一步\n結論｜先解 {topic_hint[:16]}",
+        "skeptic": f"重點｜前提未明\n邏輯｜脈絡={context_hint[:16]}\n結論｜先釐清",
+        "risk_officer": "重點｜風險偏高\n邏輯｜資訊少/範圍大/結論快\n結論｜先縮題",
+        "executor": "重點｜先出動作\n邏輯｜定義→補充→收斂\n結論｜先做短版決議",
+        "recorder": f"重點｜已記錄\n邏輯｜主題={meeting.title[:12]}\n結論｜可整理摘要",
+        "researcher": "重點｜資訊缺口大\n邏輯｜缺情境/限制/標準\n結論｜先補資料",
+        "product_advisor": "重點｜先問價值\n邏輯｜使用者是否在意\n結論｜不清楚別擴做",
     }
-    reply = style_map.get(role.role_key, f"我會以「{role.display_name}」的角度回應這個主題，先聚焦於最重要的一點，再補充下一步。")
+    full_map = {
+        "chair": "\n".join(
+            [
+                f"主題｜{meeting.title}",
+                f"共識｜本輪先聚焦在 {topic_hint[:48]}",
+                "分歧｜部分意見仍停在背景與範圍定義",
+                "風險｜若再延伸題，會議會失焦且成本上升",
+                "下一步｜保留一條主線，其餘議題延後",
+            ]
+        ),
+        "executor": "\n".join(
+            [
+                f"主題｜{meeting.title}",
+                "共識｜需要短輸出、清楚角色分工、可保存結論",
+                "分歧｜是否立刻擴功能仍未定",
+                "風險｜多供應商與 UI 同時擴張會升高維護成本",
+                "下一步｜先固定主流程，再逐步接供應商",
+            ]
+        ),
+        "recorder": "\n".join(
+            [
+                f"主題｜{meeting.title}",
+                f"共識｜本輪輸入聚焦 {topic_hint[:52]}",
+                "分歧｜仍有部分背景需再確認",
+                "風險｜若摘要過長，閱讀與 token 成本都會上升",
+                "下一步｜保留短句討論，最後再整理完整版",
+            ]
+        ),
+    }
+
+    reply = (concise_map if concise else full_map).get(
+        role.role_key,
+        "重點｜先收斂\n邏輯｜避免廢話與重複\n結論｜只保留可執行內容" if concise else "主題｜未指定\n共識｜先收斂\n分歧｜待釐清\n風險｜待確認\n下一步｜繼續整理",
+    )
     if role.source == RoleSource.OPENCLAW:
-        reply = f"此席位目前標記為 OpenClaw 預留角色。本版尚未直接橋接 OpenClaw Gateway，因此先以保留席位方式參與討論。"
-    if reason:
-        reply = f"{reply}\n\n備註：{reason}"
+        reply = "重點｜OpenClaw 預留席位\n邏輯｜目前尚未直接橋接 Gateway\n結論｜先以保留角色參與"
     return reply
 
 
-def build_round_summary(meeting: Meeting, generated_messages: list[tuple[RoleProfile, str]], user_input: str) -> str:
-    key_lines = [f"- {role.display_name}：{extract_first_sentence(content)}" for role, content in generated_messages[:4]]
+def build_round_summary(
+    meeting: Meeting,
+    generated_messages: list[tuple[RoleProfile, str]],
+    formal_input: str,
+    note_input: str,
+) -> str:
+    highlights = [f"{role.display_name}:{extract_first_sentence(content)}" for role, content in generated_messages[:2]]
     return "\n".join(
         [
-            f"第 {meeting.round_count + 1} 輪摘要",
-            f"主題：{meeting.title}",
-            f"使用者補充：{user_input or '本輪未新增補充'}",
-            "本輪重點：",
-            *key_lines,
-            "建議下一步：由使用者決定是否再開下一輪，或直接匯出為長期記憶。",
+            f"焦點｜{meeting.title[:18]}",
+            f"輸入｜{(formal_input or note_input or '無')[:18]}",
+            f"共識｜{' / '.join(highlights)[:36]}",
+            "下一步｜續談或整理",
         ]
     )
 
 
 def extract_first_sentence(content: str) -> str:
-    line = content.strip().splitlines()[0] if content.strip() else ""
-    if len(line) > 80:
-        return line[:77] + "..."
-    return line
+    first = content.strip().splitlines()[0] if content.strip() else ""
+    return first[:32]
 
 
 def build_text_export(meeting: Meeting, transcript: list[dict]) -> str:
@@ -558,13 +888,7 @@ def build_text_export(meeting: Meeting, transcript: list[dict]) -> str:
         "",
     ]
     for item in transcript:
-        lines.extend(
-            [
-                f"[Round {item['round']}] {item['speaker']} ({item['type']})",
-                item["content"],
-                "",
-            ]
-        )
+        lines.extend([f"[Round {item['round']}] {item['speaker']} ({item['type']})", item["content"], ""])
     return "\n".join(lines).strip() + "\n"
 
 

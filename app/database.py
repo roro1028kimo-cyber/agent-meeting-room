@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from contextlib import contextmanager
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.models import Base
@@ -36,8 +36,30 @@ class DatabaseManager:
 
     def create_all(self) -> None:
         Base.metadata.create_all(self.engine)
+        self._migrate_schema()
         self.initialized = True
         self.last_error = None
+
+    def _migrate_schema(self) -> None:
+        inspector = inspect(self.engine)
+        if "role_profiles" not in inspector.get_table_names():
+            return
+
+        columns = {column["name"] for column in inspector.get_columns("role_profiles")}
+        statements: list[str] = []
+        if "provider" not in columns:
+            statements.append("ALTER TABLE role_profiles ADD COLUMN provider VARCHAR(20) DEFAULT 'mock'")
+        if "response_mode" not in columns:
+            statements.append("ALTER TABLE role_profiles ADD COLUMN response_mode VARCHAR(20) DEFAULT 'concise'")
+        if "max_output_tokens" not in columns:
+            statements.append("ALTER TABLE role_profiles ADD COLUMN max_output_tokens INTEGER DEFAULT 80")
+
+        if not statements:
+            return
+
+        with self.engine.begin() as connection:
+            for statement in statements:
+                connection.execute(text(statement))
 
     def try_initialize(self) -> bool:
         try:

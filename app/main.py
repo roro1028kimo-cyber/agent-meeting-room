@@ -16,6 +16,7 @@ from app.meeting_engine import (
     create_meeting,
     ensure_defaults,
     export_meeting,
+    generate_full_summary,
     get_meeting,
     get_roles,
     list_archives,
@@ -30,6 +31,7 @@ from app.schemas import (
     AppSettingsPayload,
     ExportResponse,
     MeetingCreate,
+    MeetingFullSummaryRequest,
     MeetingResponse,
     MeetingRoundRequest,
     MemoryArchiveResponse,
@@ -107,9 +109,12 @@ def create_app(database_url: str | None = None) -> FastAPI:
             system_prompt=payload.system_prompt,
             color=payload.color,
             source=payload.source,
+            provider=payload.provider,
             enabled=payload.enabled,
             is_builtin=False,
             model_override=payload.model_override,
+            response_mode=payload.response_mode,
+            max_output_tokens=payload.max_output_tokens,
             openclaw_agent_id=payload.openclaw_agent_id,
             sort_order=len(get_roles(session)) + 1,
         )
@@ -155,7 +160,7 @@ def create_app(database_url: str | None = None) -> FastAPI:
     @app.post("/api/meetings/{meeting_id}/rounds", response_model=MeetingResponse)
     def post_round(meeting_id: str, payload: MeetingRoundRequest, session: Session = Depends(get_session)) -> MeetingResponse:
         try:
-            meeting = run_meeting_round(session, meeting_id, payload.user_input)
+            meeting = run_meeting_round(session, meeting_id, payload.formal_input, payload.note_input)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return serialize_meeting(meeting)
@@ -175,6 +180,18 @@ def create_app(database_url: str | None = None) -> FastAPI:
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
         return ExportResponse(**exported)
+
+    @app.post("/api/meetings/{meeting_id}/full-summary", response_model=MeetingResponse)
+    def post_full_summary(
+        meeting_id: str,
+        payload: MeetingFullSummaryRequest,
+        session: Session = Depends(get_session),
+    ) -> MeetingResponse:
+        try:
+            meeting = generate_full_summary(session, meeting_id, payload.force_provider)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return serialize_meeting(meeting)
 
     @app.get("/api/memories")
     def memories(session: Session = Depends(get_session)) -> list[dict]:
@@ -222,6 +239,7 @@ def serialize_meeting(meeting) -> MeetingResponse:
         context_text=meeting.context_text,
         status=meeting.status,
         round_count=meeting.round_count,
+        active_speaker=(meeting.temporary_memory or {}).get("active_speaker"),
         temporary_memory=meeting.temporary_memory or {},
         participants=participants,
         messages=messages,

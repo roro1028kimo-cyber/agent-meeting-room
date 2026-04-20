@@ -10,7 +10,7 @@
     <div class="app-shell">
       <header class="topbar">
         <div>
-          <p class="eyebrow">Local-first Multi Agent Meeting Room</p>
+          <p class="eyebrow">LOCAL-FIRST MULTI AGENT MEETING ROOM</p>
           <h1>Agent Meeting Room</h1>
         </div>
         <div class="topbar-actions">
@@ -19,13 +19,13 @@
         </div>
       </header>
 
-      <main class="meeting-layout">
-        <section class="meeting-main">
-          <div class="meeting-meta">
+      <main class="terminal-layout">
+        <section class="terminal-main panel">
+          <div class="meeting-strip">
             <div>
               <span class="meta-label">目前會議</span>
               <h2 id="meeting-title">尚未建立會議</h2>
-              <p id="meeting-objective" class="muted">請先建立一場新會議。</p>
+              <p id="meeting-objective" class="muted">先建立會議，再送出第一輪正式輸入。</p>
             </div>
             <div class="status-pill-group">
               <span class="status-pill" id="meeting-status">待命</span>
@@ -33,9 +33,23 @@
             </div>
           </div>
 
+          <section class="terminal-preview">
+            <div class="terminal-head">
+              <span class="terminal-tag">live transcript</span>
+              <span id="stage-title" class="terminal-title">等待會議開始</span>
+            </div>
+            <div id="typing-preview" class="typing-preview">
+              <span class="typing-line">> 等待第一輪輸入...</span>
+            </div>
+          </section>
+
           <section class="conversation-surface">
+            <div class="terminal-head">
+              <span class="terminal-tag">meeting log</span>
+              <span id="stage-summary" class="muted">訊息會以終端機式對話流呈現。</span>
+            </div>
             <div id="conversation-list" class="conversation-list empty">
-              建立會議後，這裡會顯示使用者與各個 agent 的逐輪討論。
+              建立會議後，這裡會顯示角色的終端機式討論紀錄。
             </div>
           </section>
 
@@ -43,15 +57,16 @@
             <div class="composer-grid">
               <label class="composer-field">
                 <span>正式會議輸入</span>
-                <textarea id="round-input" rows="3" placeholder="輸入這一輪要討論的問題、補充背景或你想回應的內容"></textarea>
+                <textarea id="round-input" rows="3" placeholder="輸入本輪核心問題。建議一輪只談一件事。"></textarea>
               </label>
               <label class="composer-field">
                 <span>使用者插話 / 補充</span>
-                <textarea id="note-input" rows="3" placeholder="輸入想補充給下一輪或想讓大家納入討論的內容"></textarea>
+                <textarea id="note-input" rows="3" placeholder="補充限制、反例或下一輪要納入的訊息。"></textarea>
               </label>
             </div>
             <div class="composer-actions">
               <button id="run-round-button" class="primary" disabled>開始下一輪</button>
+              <button id="full-summary-button" class="ghost" disabled>完整整理</button>
               <button id="close-meeting-button" class="ghost" disabled>結束會議</button>
               <button id="export-text-button" class="ghost" disabled>匯出文字</button>
               <button id="export-python-button" class="ghost" disabled>匯出 Python</button>
@@ -59,11 +74,11 @@
           </section>
         </section>
 
-        <aside class="meeting-sidebar">
+        <aside class="terminal-sidebar">
           <section class="panel">
             <div class="panel-head">
               <h3>與會 Agent</h3>
-              <p>綠燈代表席位啟用，亮起代表目前發話角色。</p>
+              <p>亮綠代表目前發話角色。</p>
             </div>
             <div id="agent-list" class="agent-list empty">尚未建立會議。</div>
           </section>
@@ -71,7 +86,7 @@
           <section class="panel">
             <div class="panel-head">
               <h3>暫存記憶</h3>
-              <p>開會中暫存，會後匯出才進入長期記憶。</p>
+              <p>只保留本場會議最需要的上下文。</p>
             </div>
             <div id="memory-preview" class="memory-preview empty">尚無暫存記憶。</div>
           </section>
@@ -79,7 +94,7 @@
           <section class="panel">
             <div class="panel-head">
               <h3>長期記憶</h3>
-              <p>匯出並存檔後留下的歷史紀錄。</p>
+              <p>匯出後才會進入這裡。</p>
             </div>
             <div id="archive-list" class="archive-list empty">尚未存入長期記憶。</div>
           </section>
@@ -94,42 +109,56 @@
           </div>
 
           <section class="drawer-section">
-            <h3>API 與模型</h3>
+            <h3>執行模式</h3>
             <form id="settings-form" class="stack">
               <label>
-                API 模式
+                執行模式
                 <select name="api_mode" id="settings-api-mode">
                   <option value="mock">mock</option>
-                  <option value="openai_compatible">openai_compatible</option>
+                  <option value="live">live</option>
                 </select>
-              </label>
-              <label>
-                API Key
-                <input type="password" name="api_key" id="settings-api-key" />
-              </label>
-              <label>
-                Base URL
-                <input type="text" name="base_url" id="settings-base-url" />
-              </label>
-              <label>
-                模型名稱
-                <input type="text" name="model_name" id="settings-model-name" />
               </label>
               <label>
                 Temperature
                 <input type="number" step="0.1" min="0" max="2" name="temperature" id="settings-temperature" />
               </label>
               <label>
-                Max Tokens
-                <input type="number" min="64" max="4000" name="max_tokens" id="settings-max-tokens" />
+                短輸出 Token 上限
+                <input type="number" min="16" max="512" name="short_reply_max_tokens" id="settings-short-tokens" />
               </label>
               <label>
+                完整整理 Token 上限
+                <input type="number" min="64" max="4000" name="full_summary_max_tokens" id="settings-full-tokens" />
+              </label>
+
+              <div class="provider-grid">
+                <article class="provider-card">
+                  <h4>OpenAI</h4>
+                  <label>API Key<input type="password" id="openai-api-key" /></label>
+                  <label>Base URL<input type="text" id="openai-base-url" /></label>
+                  <label>Model<input type="text" id="openai-model" /></label>
+                </article>
+                <article class="provider-card">
+                  <h4>Claude / Anthropic</h4>
+                  <label>API Key<input type="password" id="anthropic-api-key" /></label>
+                  <label>Base URL<input type="text" id="anthropic-base-url" /></label>
+                  <label>Model<input type="text" id="anthropic-model" /></label>
+                </article>
+                <article class="provider-card">
+                  <h4>Gemini</h4>
+                  <label>API Key<input type="password" id="gemini-api-key" /></label>
+                  <label>Base URL<input type="text" id="gemini-base-url" /></label>
+                  <label>Model<input type="text" id="gemini-model" /></label>
+                </article>
+              </div>
+
+              <label>
                 OpenClaw Gateway URL
-                <input type="text" name="openclaw_gateway_url" id="settings-openclaw-url" placeholder="本版先保留欄位" />
+                <input type="text" id="settings-openclaw-url" placeholder="本版先保留整合欄位" />
               </label>
               <label>
                 OpenClaw 備註
-                <textarea name="openclaw_notes" id="settings-openclaw-notes" rows="2" placeholder="記錄未來要接的 agent 或 gateway 資訊"></textarea>
+                <textarea id="settings-openclaw-notes" rows="2" placeholder="記錄預計接入的 OpenClaw 資訊"></textarea>
               </label>
               <button type="submit" class="primary">儲存設定</button>
             </form>
@@ -154,15 +183,15 @@
           <form id="meeting-form" class="stack">
             <label>
               會議標題
-              <input type="text" name="title" placeholder="例如：產品首頁重新設計會議" required />
+              <input type="text" name="title" placeholder="例如：開源 AI 會議室可行性會議" required />
             </label>
             <label>
               會議目標
-              <input type="text" name="objective" placeholder="例如：收斂一版可執行的前端改版方向" />
+              <input type="text" name="objective" placeholder="例如：收斂第一版可落地內容" />
             </label>
             <label>
               背景說明
-              <textarea name="context_text" rows="4" placeholder="輸入背景、限制條件、已知資訊"></textarea>
+              <textarea name="context_text" rows="4" placeholder="輸入背景、限制、目前已知條件"></textarea>
             </label>
             <fieldset class="role-picker">
               <legend>選擇與會角色</legend>
@@ -195,12 +224,46 @@
           </label>
           <label>
             系統提示詞
-            <textarea rows="5" data-role-field="system_prompt"></textarea>
+            <textarea rows="4" data-role-field="system_prompt"></textarea>
           </label>
-          <label>
-            顏色
-            <input type="color" data-role-field="color" />
-          </label>
+          <div class="role-editor-grid">
+            <label>
+              Provider
+              <select data-role-field="provider">
+                <option value="mock">mock</option>
+                <option value="openai">openai</option>
+                <option value="anthropic">anthropic</option>
+                <option value="gemini">gemini</option>
+              </select>
+            </label>
+            <label>
+              Model Override
+              <input type="text" data-role-field="model_override" placeholder="留空則使用全域預設模型" />
+            </label>
+          </div>
+          <div class="role-editor-grid">
+            <label>
+              回應模式
+              <select data-role-field="response_mode">
+                <option value="concise">concise</option>
+                <option value="full_summary">full_summary</option>
+              </select>
+            </label>
+            <label>
+              輸出 Token 上限
+              <input type="number" min="16" max="4000" data-role-field="max_output_tokens" />
+            </label>
+          </div>
+          <div class="role-editor-grid">
+            <label>
+              顏色
+              <input type="color" data-role-field="color" />
+            </label>
+            <label>
+              OpenClaw Agent ID
+              <input type="text" data-role-field="openclaw_agent_id" placeholder="預留整合欄位" />
+            </label>
+          </div>
           <button data-role-save class="ghost">儲存角色</button>
         </article>
       </template>

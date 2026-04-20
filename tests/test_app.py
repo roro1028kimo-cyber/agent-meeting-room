@@ -51,14 +51,20 @@ class AgentMeetingRoomTests(unittest.TestCase):
 
         round_response = self.client.post(
             f"/api/meetings/{meeting['id']}/rounds",
-            json={"user_input": "請收斂一版會議室 MVP 的功能邊界。"},
+            json={
+                "formal_input": "請收斂一版會議室 MVP 的功能邊界。",
+                "note_input": "插話：請不要做成重型 PM 系統。",
+            },
         )
         self.assertEqual(round_response.status_code, 200)
         payload = round_response.json()
         self.assertEqual(payload["round_count"], 1)
+        self.assertTrue(payload["active_speaker"])
         self.assertTrue(any(message["message_type"] == "agent" for message in payload["messages"]))
         self.assertTrue(any(message["message_type"] == "summary" for message in payload["messages"]))
         self.assertTrue(payload["temporary_memory"]["latest_summary"])
+        self.assertTrue(payload["temporary_memory"]["latest_formal_input"])
+        self.assertTrue(payload["temporary_memory"]["latest_note_input"])
 
     def test_export_creates_archive_and_python_payload(self) -> None:
         bootstrap = self.client.get("/api/bootstrap").json()
@@ -74,7 +80,7 @@ class AgentMeetingRoomTests(unittest.TestCase):
         ).json()
         self.client.post(
             f"/api/meetings/{meeting['id']}/rounds",
-            json={"user_input": "請給我一個簡單會議結論。"},
+            json={"formal_input": "請給我一個簡單會議結論。", "note_input": ""},
         )
 
         exported = self.client.post(

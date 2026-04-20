@@ -18,6 +18,18 @@ class RoleSource(str, enum.Enum):
     OPENCLAW = "openclaw"
 
 
+class ModelProvider(str, enum.Enum):
+    MOCK = "mock"
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+    GEMINI = "gemini"
+
+
+class ResponseMode(str, enum.Enum):
+    CONCISE = "concise"
+    FULL_SUMMARY = "full_summary"
+
+
 class MessageType(str, enum.Enum):
     SYSTEM = "system"
     USER = "user"
@@ -52,9 +64,12 @@ class RoleProfile(Base):
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
     color: Mapped[str] = mapped_column(String(20), default="#6ee7b7")
     source: Mapped[RoleSource] = mapped_column(SAEnum(RoleSource), default=RoleSource.BUILTIN)
+    provider: Mapped[ModelProvider] = mapped_column(SAEnum(ModelProvider), default=ModelProvider.MOCK)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
     is_builtin: Mapped[bool] = mapped_column(Boolean, default=False)
     model_override: Mapped[str | None] = mapped_column(String(120), nullable=True)
+    response_mode: Mapped[ResponseMode] = mapped_column(SAEnum(ResponseMode), default=ResponseMode.CONCISE)
+    max_output_tokens: Mapped[int] = mapped_column(Integer, default=80)
     openclaw_agent_id: Mapped[str | None] = mapped_column(String(120), nullable=True)
     sort_order: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

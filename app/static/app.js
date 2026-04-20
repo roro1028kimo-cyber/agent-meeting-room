@@ -11,12 +11,16 @@ const els = {
   meetingObjective: document.getElementById("meeting-objective"),
   meetingStatus: document.getElementById("meeting-status"),
   meetingRound: document.getElementById("meeting-round"),
+  stageTitle: document.getElementById("stage-title"),
+  stageSummary: document.getElementById("stage-summary"),
+  typingPreview: document.getElementById("typing-preview"),
   agentList: document.getElementById("agent-list"),
   archiveList: document.getElementById("archive-list"),
   memoryPreview: document.getElementById("memory-preview"),
   roundInput: document.getElementById("round-input"),
   noteInput: document.getElementById("note-input"),
   runRoundButton: document.getElementById("run-round-button"),
+  fullSummaryButton: document.getElementById("full-summary-button"),
   closeMeetingButton: document.getElementById("close-meeting-button"),
   exportTextButton: document.getElementById("export-text-button"),
   exportPythonButton: document.getElementById("export-python-button"),
@@ -37,6 +41,34 @@ function escapeHtml(value = "") {
     .replaceAll('"', "&quot;");
 }
 
+function clipText(value = "", limit = 48) {
+  const compact = String(value).replace(/\s+/g, " ").trim();
+  if (compact.length <= limit) return compact;
+  return `${compact.slice(0, Math.max(0, limit - 1))}…`;
+}
+
+function firstLine(value = "") {
+  return String(value).split(/\r?\n/).map((line) => line.trim()).find(Boolean) || "";
+}
+
+function toInlineLog(value = "", limit = 84) {
+  const compact = String(value)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.replaceAll("｜", "="))
+    .join(" / ");
+  return clipText(compact, limit);
+}
+
+function getVisibleMessages(messages = []) {
+  if (!messages.length) return [];
+  const latestRound = Math.max(...messages.map((item) => item.round_number || 0));
+  const latestRoundMessages = messages.filter((item) => item.round_number === latestRound);
+  const fallback = latestRound > 0 ? latestRoundMessages : messages.slice(-8);
+  return fallback.filter((item) => item.message_type !== "system").slice(-10);
+}
+
 async function request(url, options = {}) {
   const response = await fetch(url, {
     headers: {
@@ -47,13 +79,9 @@ async function request(url, options = {}) {
   });
 
   const contentType = response.headers.get("content-type") || "";
-  const payload = contentType.includes("application/json")
-    ? await response.json()
-    : await response.text();
-
+  const payload = contentType.includes("application/json") ? await response.json() : await response.text();
   if (!response.ok) {
-    const detail = typeof payload === "string" ? payload : JSON.stringify(payload);
-    throw new Error(detail);
+    throw new Error(typeof payload === "string" ? payload : JSON.stringify(payload));
   }
   return payload;
 }
@@ -75,15 +103,22 @@ async function bootstrap() {
 }
 
 function renderSettings() {
-  const settings = state.settings;
-  document.getElementById("settings-api-mode").value = settings.api_mode;
-  document.getElementById("settings-api-key").value = settings.api_key || "";
-  document.getElementById("settings-base-url").value = settings.base_url || "";
-  document.getElementById("settings-model-name").value = settings.model_name || "";
-  document.getElementById("settings-temperature").value = settings.temperature ?? 0.7;
-  document.getElementById("settings-max-tokens").value = settings.max_tokens ?? 700;
-  document.getElementById("settings-openclaw-url").value = settings.openclaw_gateway_url || "";
-  document.getElementById("settings-openclaw-notes").value = settings.openclaw_notes || "";
+  document.getElementById("settings-api-mode").value = state.settings.api_mode;
+  document.getElementById("settings-temperature").value = state.settings.temperature ?? 0.35;
+  document.getElementById("settings-short-tokens").value = state.settings.short_reply_max_tokens ?? 48;
+  document.getElementById("settings-full-tokens").value = state.settings.full_summary_max_tokens ?? 360;
+
+  document.getElementById("openai-api-key").value = state.settings.openai_api_key || "";
+  document.getElementById("openai-base-url").value = state.settings.openai_base_url || "";
+  document.getElementById("openai-model").value = state.settings.openai_model || "";
+  document.getElementById("anthropic-api-key").value = state.settings.anthropic_api_key || "";
+  document.getElementById("anthropic-base-url").value = state.settings.anthropic_base_url || "";
+  document.getElementById("anthropic-model").value = state.settings.anthropic_model || "";
+  document.getElementById("gemini-api-key").value = state.settings.gemini_api_key || "";
+  document.getElementById("gemini-base-url").value = state.settings.gemini_base_url || "";
+  document.getElementById("gemini-model").value = state.settings.gemini_model || "";
+  document.getElementById("settings-openclaw-url").value = state.settings.openclaw_gateway_url || "";
+  document.getElementById("settings-openclaw-notes").value = state.settings.openclaw_notes || "";
 }
 
 function renderRoleEditors() {
@@ -91,12 +126,17 @@ function renderRoleEditors() {
   state.roles.forEach((role) => {
     const fragment = els.roleTemplate.content.cloneNode(true);
     fragment.querySelector("[data-role-name]").textContent = role.display_name;
-    fragment.querySelector("[data-role-type]").textContent = role.source;
+    fragment.querySelector("[data-role-type]").textContent = `${role.source} / ${role.provider}`;
     fragment.querySelector("[data-role-enabled]").checked = role.enabled;
     fragment.querySelector('[data-role-field="display_name"]').value = role.display_name;
     fragment.querySelector('[data-role-field="description"]').value = role.description;
     fragment.querySelector('[data-role-field="system_prompt"]').value = role.system_prompt;
+    fragment.querySelector('[data-role-field="provider"]').value = role.provider;
+    fragment.querySelector('[data-role-field="model_override"]').value = role.model_override || "";
+    fragment.querySelector('[data-role-field="response_mode"]').value = role.response_mode;
+    fragment.querySelector('[data-role-field="max_output_tokens"]').value = role.max_output_tokens ?? 48;
     fragment.querySelector('[data-role-field="color"]').value = role.color;
+    fragment.querySelector('[data-role-field="openclaw_agent_id"]').value = role.openclaw_agent_id || "";
 
     fragment.querySelector("[data-role-save]").addEventListener("click", async (event) => {
       event.preventDefault();
@@ -105,7 +145,12 @@ function renderRoleEditors() {
         display_name: card.querySelector('[data-role-field="display_name"]').value,
         description: card.querySelector('[data-role-field="description"]').value,
         system_prompt: card.querySelector('[data-role-field="system_prompt"]').value,
+        provider: card.querySelector('[data-role-field="provider"]').value,
+        model_override: card.querySelector('[data-role-field="model_override"]').value || null,
+        response_mode: card.querySelector('[data-role-field="response_mode"]').value,
+        max_output_tokens: Number(card.querySelector('[data-role-field="max_output_tokens"]').value || 48),
         color: card.querySelector('[data-role-field="color"]').value,
+        openclaw_agent_id: card.querySelector('[data-role-field="openclaw_agent_id"]').value || null,
         enabled: card.querySelector("[data-role-enabled]").checked,
       };
       const updated = await request(`/api/roles/${role.id}`, {
@@ -116,8 +161,7 @@ function renderRoleEditors() {
       renderRoleEditors();
       renderRolePicker();
       if (state.meeting) {
-        const refreshed = await request(`/api/meetings/${state.meeting.id}`);
-        renderMeeting(refreshed);
+        renderMeeting(await request(`/api/meetings/${state.meeting.id}`));
       }
     });
 
@@ -135,6 +179,7 @@ function renderRolePicker() {
           <div>
             <strong>${escapeHtml(role.display_name)}</strong>
             <div class="muted">${escapeHtml(role.description)}</div>
+            <div class="muted">${escapeHtml(role.provider)} / ${escapeHtml(role.response_mode)}</div>
           </div>
         </label>
       `
@@ -146,11 +191,14 @@ function renderMeeting(meeting) {
   state.meeting = meeting;
   if (!meeting) {
     els.meetingTitle.textContent = "尚未建立會議";
-    els.meetingObjective.textContent = "請先建立一場新會議。";
+    els.meetingObjective.textContent = "先建立會議，再送出第一輪正式輸入。";
     els.meetingStatus.textContent = "待命";
     els.meetingRound.textContent = "Round 0";
+    els.stageTitle.textContent = "等待會議開始";
+    els.stageSummary.textContent = "訊息會以終端機式對話流呈現。";
+    renderTypingPreview([]);
     els.conversationList.className = "conversation-list empty";
-    els.conversationList.textContent = "建立會議後，這裡會顯示使用者與各個 agent 的逐輪討論。";
+    els.conversationList.textContent = "建立會議後，這裡會顯示角色的終端機式討論紀錄。";
     els.agentList.className = "agent-list empty";
     els.agentList.textContent = "尚未建立會議。";
     els.memoryPreview.className = "memory-preview empty";
@@ -163,73 +211,106 @@ function renderMeeting(meeting) {
   els.meetingObjective.textContent = meeting.objective || "未設定會議目標。";
   els.meetingStatus.textContent = meeting.status;
   els.meetingRound.textContent = `Round ${meeting.round_count}`;
-  toggleMeetingControls(true);
+  els.stageTitle.textContent = meeting.title;
+  els.stageSummary.textContent = firstLine(meeting.temporary_memory?.latest_summary) || "每位角色都應只講重點、邏輯與結論。";
+  toggleMeetingControls(meeting.status !== "closed");
+  els.exportTextButton.disabled = false;
+  els.exportPythonButton.disabled = false;
   renderMessages(meeting.messages || []);
-  renderParticipants(meeting.participants || []);
+  renderParticipants(meeting.participants || [], meeting.active_speaker);
   renderTemporaryMemory(meeting.temporary_memory || {});
   renderArchives(meeting.archives || state.memories);
+  renderTypingPreview(meeting.messages || []);
 }
 
 function toggleMeetingControls(enabled) {
   els.runRoundButton.disabled = !enabled;
+  els.fullSummaryButton.disabled = !enabled;
   els.closeMeetingButton.disabled = !enabled;
   els.exportTextButton.disabled = !enabled;
   els.exportPythonButton.disabled = !enabled;
 }
 
 function renderMessages(messages) {
-  if (!messages.length) {
+  const visibleMessages = getVisibleMessages(messages);
+
+  if (!visibleMessages.length) {
     els.conversationList.className = "conversation-list empty";
     els.conversationList.textContent = "這場會議還沒有任何內容。";
     return;
   }
-  const latestAgent = [...messages].reverse().find((item) => item.message_type === "agent");
+
+  const latestAgent = [...visibleMessages].reverse().find(
+    (item) => item.message_type === "agent" || (item.meta_payload || {}).kind === "full_summary"
+  );
   els.conversationList.className = "conversation-list";
-  els.conversationList.innerHTML = messages
+  els.conversationList.innerHTML = visibleMessages
     .map((message) => {
       const active = latestAgent && latestAgent.id === message.id;
+      const toneClass =
+        message.message_type === "summary"
+          ? "summary-message"
+          : message.message_type === "user"
+            ? "user-message"
+            : "";
+      const provider = message.meta_payload?.provider || message.meta_payload?.source || message.message_type;
+      const preview = toInlineLog(message.content, message.message_type === "summary" ? 110 : 72);
+      const shouldExpand = message.content.includes("\n") || message.content.length > preview.length + 3;
       return `
-        <article class="message-card ${active ? "active" : ""}">
+        <article class="message-card ${active ? "active" : ""} ${toneClass}">
           <div class="message-meta">
             <div class="speaker">
               <span class="light ${active ? "on" : ""}"></span>
-              <strong>${escapeHtml(message.role_name)}</strong>
+              <strong>[R${message.round_number}] ${escapeHtml(message.role_name)}</strong>
             </div>
-            <span class="message-type">${escapeHtml(message.message_type)} / Round ${message.round_number}</span>
+            <span>${escapeHtml(provider)} / ${escapeHtml(message.message_type)}</span>
           </div>
-          <div class="message-body">${escapeHtml(message.content)}</div>
+          <div class="message-inline">${escapeHtml(preview)}</div>
+          ${
+            shouldExpand
+              ? `<details class="message-expand"><summary>展開全文</summary><pre class="message-detail">${escapeHtml(message.content)}</pre></details>`
+              : ""
+          }
         </article>
       `;
     })
     .join("");
 }
 
-function renderParticipants(participants) {
+function renderTypingPreview(messages) {
+  const recent = [...messages]
+    .filter((item) => item.message_type === "agent" || item.message_type === "summary")
+    .slice(-3);
+  if (!recent.length) {
+    els.typingPreview.innerHTML = `<span class="typing-line">&gt; 等待第一輪輸入...</span>`;
+    return;
+  }
+  els.typingPreview.innerHTML = recent
+    .map((item) => `<span class="typing-line">&gt; [${escapeHtml(item.role_name)}] ${escapeHtml(toInlineLog(item.content, 96))}</span>`)
+    .join("");
+}
+
+function renderParticipants(participants, activeSpeaker) {
   if (!participants.length) {
     els.agentList.className = "agent-list empty";
     els.agentList.textContent = "尚未建立會議。";
     return;
   }
-
-  const latestAgentName = [...(state.meeting?.messages || [])]
-    .reverse()
-    .find((item) => item.message_type === "agent")?.role_name;
-
   els.agentList.className = "agent-list";
   els.agentList.innerHTML = participants
     .map((participant) => {
-      const isActive = latestAgentName === participant.role.display_name;
+      const isActive = activeSpeaker === participant.role.display_name;
       return `
-        <article class="agent-card">
+        <article class="agent-card ${isActive ? "active-speaker" : ""}">
           <div class="agent-row">
             <div class="agent-chip">
-              <span class="light on" style="background:${escapeHtml(participant.role.color)}"></span>
+              <span class="light on" style="background:${escapeHtml(participant.role.color)}; box-shadow: 0 0 10px ${escapeHtml(participant.role.color)}"></span>
               <strong>${escapeHtml(participant.role.display_name)}</strong>
             </div>
             <span>${isActive ? "發言中" : "待命"}</span>
           </div>
           <div class="agent-role">${escapeHtml(participant.role.description)}</div>
-          <div class="agent-source">${escapeHtml(participant.role.source)}</div>
+          <div class="agent-source">${escapeHtml(participant.role.provider)} / ${escapeHtml(participant.role.response_mode)}</div>
         </article>
       `;
     })
@@ -237,31 +318,21 @@ function renderParticipants(participants) {
 }
 
 function renderTemporaryMemory(memory) {
-  const notes = memory.notes || [];
-  const latestSummary = memory.latest_summary || "";
-  if (!notes.length && !latestSummary) {
+  if (!memory.latest_formal_input && !memory.latest_note_input && !memory.latest_summary) {
     els.memoryPreview.className = "memory-preview empty";
     els.memoryPreview.textContent = "尚無暫存記憶。";
     return;
   }
+  const lines = [
+    memory.latest_formal_input ? `正式輸入｜${clipText(memory.latest_formal_input, 32)}` : null,
+    memory.latest_note_input ? `插話｜${clipText(memory.latest_note_input, 28)}` : null,
+    memory.latest_summary ? `摘要｜${clipText(firstLine(memory.latest_summary), 36)}` : null,
+  ].filter(Boolean);
+
   els.memoryPreview.className = "memory-preview";
-  els.memoryPreview.innerHTML = `
-    <article class="memory-card">
-      <strong>最新摘要</strong>
-      <div class="message-body">${escapeHtml(latestSummary || "尚未產生")}</div>
-    </article>
-    ${notes
-      .slice(-5)
-      .reverse()
-      .map(
-        (note) => `
-          <article class="memory-card">
-            <div class="message-body">${escapeHtml(note)}</div>
-          </article>
-        `
-      )
-      .join("")}
-  `;
+  els.memoryPreview.innerHTML = lines
+    .map((line) => `<article class="memory-card"><div class="message-body">${escapeHtml(line)}</div></article>`)
+    .join("");
 }
 
 function renderArchives(source = state.memories) {
@@ -290,11 +361,18 @@ async function saveSettings(event) {
   event.preventDefault();
   const payload = {
     api_mode: document.getElementById("settings-api-mode").value,
-    api_key: document.getElementById("settings-api-key").value,
-    base_url: document.getElementById("settings-base-url").value,
-    model_name: document.getElementById("settings-model-name").value,
-    temperature: Number(document.getElementById("settings-temperature").value || 0.7),
-    max_tokens: Number(document.getElementById("settings-max-tokens").value || 700),
+    temperature: Number(document.getElementById("settings-temperature").value || 0.35),
+    short_reply_max_tokens: Number(document.getElementById("settings-short-tokens").value || 48),
+    full_summary_max_tokens: Number(document.getElementById("settings-full-tokens").value || 360),
+    openai_api_key: document.getElementById("openai-api-key").value,
+    openai_base_url: document.getElementById("openai-base-url").value,
+    openai_model: document.getElementById("openai-model").value,
+    anthropic_api_key: document.getElementById("anthropic-api-key").value,
+    anthropic_base_url: document.getElementById("anthropic-base-url").value,
+    anthropic_model: document.getElementById("anthropic-model").value,
+    gemini_api_key: document.getElementById("gemini-api-key").value,
+    gemini_base_url: document.getElementById("gemini-base-url").value,
+    gemini_model: document.getElementById("gemini-model").value,
     openclaw_enabled: Boolean(document.getElementById("settings-openclaw-url").value),
     openclaw_gateway_url: document.getElementById("settings-openclaw-url").value,
     openclaw_notes: document.getElementById("settings-openclaw-notes").value,
@@ -310,10 +388,13 @@ async function createCustomRole() {
   const payload = {
     display_name: "新角色",
     description: "請描述這個角色的定位",
-    system_prompt: "你是一個會議室中的輕量角色。請使用繁體中文發言，先說重點，再補充理由。",
-    color: "#a78bfa",
+    system_prompt: "你是會議中的一個角色。只用繁體中文輸出重點、邏輯、結論，不要客套。",
+    color: "#7da8ff",
     source: "custom",
+    provider: "mock",
     enabled: true,
+    response_mode: "concise",
+    max_output_tokens: 48,
   };
   const created = await request("/api/roles", {
     method: "POST",
@@ -347,7 +428,8 @@ async function createMeeting(event) {
 async function runRound() {
   if (!state.meeting) return;
   const payload = {
-    user_input: [els.roundInput.value.trim(), els.noteInput.value.trim()].filter(Boolean).join("\n"),
+    formal_input: els.roundInput.value.trim(),
+    note_input: els.noteInput.value.trim(),
   };
   const meeting = await request(`/api/meetings/${state.meeting.id}/rounds`, {
     method: "POST",
@@ -358,13 +440,23 @@ async function runRound() {
   renderMeeting(meeting);
 }
 
-async function closeMeeting() {
+async function runFullSummary() {
   if (!state.meeting) return;
-  const meeting = await request(`/api/meetings/${state.meeting.id}/close`, {
+  const meeting = await request(`/api/meetings/${state.meeting.id}/full-summary`, {
     method: "POST",
     body: JSON.stringify({}),
   });
   renderMeeting(meeting);
+}
+
+async function closeMeeting() {
+  if (!state.meeting) return;
+  renderMeeting(
+    await request(`/api/meetings/${state.meeting.id}/close`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    })
+  );
 }
 
 async function exportMeeting(exportFormat) {
@@ -377,8 +469,7 @@ async function exportMeeting(exportFormat) {
   popup.document.write(`<pre>${escapeHtml(result.content)}</pre>`);
   state.memories = await request("/api/memories");
   renderArchives();
-  const refreshed = await request(`/api/meetings/${state.meeting.id}`);
-  renderMeeting(refreshed);
+  renderMeeting(await request(`/api/meetings/${state.meeting.id}`));
 }
 
 function openDrawer(element) {
@@ -393,10 +484,11 @@ document.getElementById("settings-toggle").addEventListener("click", () => openD
 document.getElementById("settings-close").addEventListener("click", () => closeDrawer(els.settingsDrawer));
 document.getElementById("new-meeting-toggle").addEventListener("click", () => openDrawer(els.meetingModal));
 document.getElementById("meeting-close").addEventListener("click", () => closeDrawer(els.meetingModal));
-els.settingsForm.addEventListener("submit", saveSettings);
 document.getElementById("add-role-button").addEventListener("click", createCustomRole);
+els.settingsForm.addEventListener("submit", saveSettings);
 els.meetingForm.addEventListener("submit", createMeeting);
 els.runRoundButton.addEventListener("click", runRound);
+els.fullSummaryButton.addEventListener("click", runFullSummary);
 els.closeMeetingButton.addEventListener("click", closeMeeting);
 els.exportTextButton.addEventListener("click", () => exportMeeting("text"));
 els.exportPythonButton.addEventListener("click", () => exportMeeting("python"));
