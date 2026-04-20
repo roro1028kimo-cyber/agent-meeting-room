@@ -8,4 +8,7 @@ htmlcov/
 .env
 agent_meeting_room.db
 test_agent_meeting_room.db
-
+*.db
+*.sqlite
+*.sqlite3
+exports/

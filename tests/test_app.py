@@ -7,6 +7,7 @@ from uuid import uuid4
 from fastapi.testclient import TestClient
 
 from app.main import create_app
+from app.meeting_engine import parse_python_archive
 
 
 class AgentMeetingRoomTests(unittest.TestCase):
@@ -23,108 +24,71 @@ class AgentMeetingRoomTests(unittest.TestCase):
         if self.db_path.exists():
             self.db_path.unlink()
 
-    def create_meeting(self) -> dict:
-        response = self.client.post(
-            "/api/meetings",
-            json={
-                "topic": "Agent Meeting Room MVP",
-                "meeting_mode": "pre_project",
-                "background": "要完成第一版可測試的多角色會議系統。",
-                "timeline": "兩週內完成 MVP",
-                "task_list": ["建立 FastAPI API", "完成 HTML 介面"],
-                "blockers": ["尚未確認正式部署方式"],
-                "risks": ["需求持續變動造成重工"],
-                "acceptance_criteria": ["可建立會議", "可輸出主持人摘要"],
-                "kpis": [],
-            },
-        )
-        self.assertEqual(response.status_code, 200)
-        return response.json()
-
     def test_homepage_renders_successfully(self) -> None:
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)
         self.assertIn("Agent Meeting Room", response.text)
 
-    def test_create_meeting_generates_intake_message(self) -> None:
-        meeting = self.create_meeting()
-        self.assertEqual(meeting["current_state"], "intake")
-        self.assertTrue(meeting["messages"])
-        self.assertEqual(meeting["messages"][0]["role_id"], "ideation_interviewer")
+    def test_bootstrap_returns_settings_and_roles(self) -> None:
+        response = self.client.get("/api/bootstrap")
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["settings"]["api_mode"], "mock")
+        self.assertGreaterEqual(len(payload["roles"]), 6)
 
-    def test_confirm_and_discuss_generates_summary(self) -> None:
-        meeting = self.create_meeting()
-        meeting_id = meeting["id"]
+    def test_create_meeting_and_run_round(self) -> None:
+        bootstrap = self.client.get("/api/bootstrap").json()
+        role_ids = [role["id"] for role in bootstrap["roles"][:3]]
+        meeting = self.client.post(
+            "/api/meetings",
+            json={
+                "title": "輕量會議室測試",
+                "objective": "確認多 agent 可逐輪發言",
+                "context_text": "本版先以 mock 模式測試會議流程。",
+                "selected_role_ids": role_ids,
+            },
+        ).json()
 
-        confirm_response = self.client.post(
-            f"/api/meetings/{meeting_id}/confirm",
-            json={"note": "可以開始正式會議。"},
+        round_response = self.client.post(
+            f"/api/meetings/{meeting['id']}/rounds",
+            json={"user_input": "請收斂一版會議室 MVP 的功能邊界。"},
         )
-        self.assertEqual(confirm_response.status_code, 200)
-        self.assertEqual(confirm_response.json()["current_state"], "confirming")
+        self.assertEqual(round_response.status_code, 200)
+        payload = round_response.json()
+        self.assertEqual(payload["round_count"], 1)
+        self.assertTrue(any(message["message_type"] == "agent" for message in payload["messages"]))
+        self.assertTrue(any(message["message_type"] == "summary" for message in payload["messages"]))
+        self.assertTrue(payload["temporary_memory"]["latest_summary"])
 
-        discussion_response = self.client.post(
-            f"/api/meetings/{meeting_id}/discussion",
-            json={"message": "請整理 MVP 範圍、主要風險與下一步。"},
-        )
-        self.assertEqual(discussion_response.status_code, 200)
-        payload = discussion_response.json()
-        self.assertEqual(payload["current_state"], "meeting_live")
-        self.assertTrue(payload["chair_summary"]["conclusion"])
-        self.assertGreaterEqual(len(payload["chair_summary"]["next_actions"]), 1)
-
-    def test_interrupt_and_reframe_flow(self) -> None:
-        meeting = self.create_meeting()
-        meeting_id = meeting["id"]
-        self.client.post(f"/api/meetings/{meeting_id}/confirm", json={"note": "開始會議"})
+    def test_export_creates_archive_and_python_payload(self) -> None:
+        bootstrap = self.client.get("/api/bootstrap").json()
+        role_ids = [role["id"] for role in bootstrap["roles"][:2]]
+        meeting = self.client.post(
+            "/api/meetings",
+            json={
+                "title": "匯出測試",
+                "objective": "確認文字與 Python 匯出正常",
+                "context_text": "測試長期記憶存檔。",
+                "selected_role_ids": role_ids,
+            },
+        ).json()
         self.client.post(
-            f"/api/meetings/{meeting_id}/discussion",
-            json={"message": "先做第一輪收斂"},
+            f"/api/meetings/{meeting['id']}/rounds",
+            json={"user_input": "請給我一個簡單會議結論。"},
         )
 
-        interrupt_response = self.client.post(
-            f"/api/meetings/{meeting_id}/interrupts",
-            json={"message": "關鍵限制改成一週內完成", "priority": "high", "mode": "meeting"},
+        exported = self.client.post(
+            f"/api/meetings/{meeting['id']}/export",
+            json={"export_format": "python", "archive": True},
         )
-        self.assertEqual(interrupt_response.status_code, 200)
-        self.assertEqual(
-            interrupt_response.json()["current_state"], "paused_for_user_correction"
-        )
+        self.assertEqual(exported.status_code, 200)
+        payload = exported.json()
+        self.assertTrue(payload["archived"])
+        parsed = parse_python_archive(payload["content"])
+        self.assertEqual(parsed["title"], "匯出測試")
 
-        reframe_response = self.client.post(
-            f"/api/meetings/{meeting_id}/reframe",
-            json={"updated_context": "排程修正為一週內可交付的 MVP"},
-        )
-        self.assertEqual(reframe_response.status_code, 200)
-        self.assertEqual(reframe_response.json()["current_state"], "reframing")
-
-        resumed_response = self.client.post(
-            f"/api/meetings/{meeting_id}/discussion",
-            json={"message": "請依新時程重排任務。"},
-        )
-        self.assertEqual(resumed_response.status_code, 200)
-        self.assertEqual(resumed_response.json()["current_state"], "meeting_live")
-
-    def test_exports_work_after_discussion(self) -> None:
-        meeting = self.create_meeting()
-        meeting_id = meeting["id"]
-        self.client.post(f"/api/meetings/{meeting_id}/confirm", json={"note": "開始會議"})
-        self.client.post(
-            f"/api/meetings/{meeting_id}/discussion",
-            json={"message": "請整理結論與下一步。"},
-        )
-
-        json_response = self.client.get(f"/api/meetings/{meeting_id}/export?format=json")
-        markdown_response = self.client.get(
-            f"/api/meetings/{meeting_id}/export?format=markdown"
-        )
-        html_response = self.client.get(f"/api/meetings/{meeting_id}/export?format=html")
-
-        self.assertEqual(json_response.status_code, 200)
-        self.assertEqual(markdown_response.status_code, 200)
-        self.assertEqual(html_response.status_code, 200)
-        self.assertIn("# Agent Meeting Room MVP", markdown_response.text)
-        self.assertIn("<html", html_response.text.lower())
+        memories = self.client.get("/api/memories").json()
+        self.assertGreaterEqual(len(memories), 1)
 
 
 if __name__ == "__main__":

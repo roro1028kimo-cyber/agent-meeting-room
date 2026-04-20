@@ -1,40 +1,36 @@
 # Agent Meeting Room
 
-`Agent Meeting Room` 是依照 [agent.md](C:\codex\agent-meeting-room\agent.md:1) 規格實作的第一版會議代理系統 MVP。
+`Agent Meeting Room` 是一個單機優先、輕量化的多 agent 會議室。這一版不再走重 PM 流程，而是專注在一個穩定的會議介面，讓多個 AI 角色能圍繞同一個主題持續討論、保留暫存記憶，並在會後匯出成文字或 Python 檔案，再進一步存入長期記憶。
 
-如果你要看這次交付做了哪些內容、測試到哪裡、目前還缺什麼，請直接看 `REPORT.md`。
+目前產品方向以 [agent.md](C:\codex\agent-meeting-room\agent.md:1) 為準，`OpenClaw` 被視為未來整合對象，而不是在此專案內重做它的 Gateway 或 Skills 系統。
 
-## 專案定位
+## MVP 目標
 
-這個專案的核心不是單純聊天，而是把會議流程做成可控、可追蹤、可匯出的系統，讓使用者能透過多角色代理完成：
+- 一個介面，多個 agent 開會
+- 單機優先，可直接用 SQLite 啟動
+- 設定頁可填 API、模型、角色與系統提示詞
+- 會議中使用暫存記憶，不做複雜工作流
+- 會後可匯出 `text` 與 `python` 格式並寫入本地檔案
+- 預留 OpenClaw 角色來源與整合欄位，但不重做 OpenClaw 本體
 
-- 會議前提整理
-- 正式會議收斂
-- 插話排隊與高優先修正
-- 主持人摘要整合
-- 待辦與風險輸出
-- 多格式報告匯出
+## 技術組成
 
-## 第一版技術組合
+- 前端：HTML、CSS、原生 JavaScript
+- 後端：Python、FastAPI
+- ORM：SQLAlchemy
+- 預設資料庫：SQLite
+- 可切換資料庫：PostgreSQL
+- 模型呼叫：OpenAI compatible API 或 mock 模式
 
-- 前端：HTML + CSS + 原生 JavaScript
-- 後端：Python + FastAPI
-- 資料存取：SQLAlchemy
-- 正式資料庫：PostgreSQL
-- 測試資料庫：SQLite
-- API 主交換格式：JSON
+## 目前功能
 
-## 第一版已完成能力
-
-- 建立會議
-- 進入訪談整理流程
-- 進行前提確認
-- 啟動正式會議回合
-- 輸出多角色回應
-- 產生主持人摘要
-- 支援中低優先插話排隊
-- 支援高優先插話暫停與重整
-- 匯出 JSON、Markdown、HTML
+- 建立會議並選擇參與角色
+- 內建多種會議角色
+- 可新增自訂角色與自訂提示詞
+- 逐輪輸入討論內容，產生多 agent 回覆
+- 顯示暫存記憶、最新摘要與長期記憶列表
+- 匯出會議為純文字或 Python 檔案
+- 匯出後自動建立記憶存檔紀錄
 
 ## 專案結構
 
@@ -43,10 +39,10 @@ app/
   main.py
   config.py
   database.py
-  models.py
-  schemas.py
   meeting_engine.py
+  models.py
   reports.py
+  schemas.py
   static/
     app.js
     style.css
@@ -54,12 +50,13 @@ app/
     index.html
 tests/
 agent.md
+README.md
 REPORT.md
 requirements.txt
-docker-compose.yml
+railway.json
 ```
 
-## 本機啟動方式
+## 本地啟動
 
 ### 1. 建立虛擬環境
 
@@ -68,71 +65,85 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 ```
 
-### 2. 安裝相依套件
+### 2. 安裝依賴
 
 ```powershell
 pip install -r requirements.txt
 ```
 
-### 3. 啟動 PostgreSQL
+### 3. 啟動服務
 
-```powershell
-docker compose up -d
-```
-
-### 4. 設定資料庫連線
-
-```powershell
-$env:DATABASE_URL="postgresql+psycopg://postgres:postgres@localhost:5432/agent_meeting_room"
-```
-
-### 5. 啟動應用程式
+如果沒有設定 `DATABASE_URL`，系統會自動使用本地 SQLite。
 
 ```powershell
 uvicorn app.main:create_app --factory --reload
 ```
 
-啟動後可開啟：
+啟動後開啟：
 
-- 首頁：[http://127.0.0.1:8000](http://127.0.0.1:8000)
+- [http://127.0.0.1:8000](http://127.0.0.1:8000)
 
-## 測試方式
+## PostgreSQL 設定
 
-目前自動化測試使用 SQLite 作為測試資料庫，目的是讓測試更快、更穩定；正式開發與部署仍以 PostgreSQL 為主。
-
-執行指令如下：
+如果你要改用 PostgreSQL，可以先設定環境變數：
 
 ```powershell
-python -m unittest discover -s tests -v
+$env:DATABASE_URL="postgresql+psycopg://postgres:postgres@localhost:5432/agent_meeting_room"
 ```
+
+之後再啟動 FastAPI 即可。
+
+## API / 模型設定
+
+進入介面後的「設定」可以填入：
+
+- `API Mode`
+- `API Key`
+- `Base URL`
+- `Model Name`
+- `Temperature`
+- `Max Tokens`
+- `OpenClaw Gateway URL`
+- `OpenClaw Notes`
+
+其中：
+
+- `mock` 模式不需要 API Key，方便本地驗證流程
+- `openai_compatible` 模式可接 OpenAI 相容端點
+
+## 測試
+
+```powershell
+.\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+目前測試覆蓋：
+
+- 首頁可正常載入
+- Bootstrap 可回傳設定、角色、會議與記憶
+- 建立會議後可執行一輪討論
+- 匯出 Python 檔案後可寫入記憶存檔
 
 ## 主要 API
 
+- `GET /api/health`
+- `GET /api/bootstrap`
+- `GET /api/settings`
+- `PUT /api/settings`
+- `GET /api/roles`
+- `POST /api/roles`
+- `PUT /api/roles/{role_id}`
+- `GET /api/meetings`
 - `POST /api/meetings`
-- `POST /api/meetings/{meeting_id}/confirm`
-- `POST /api/meetings/{meeting_id}/discussion`
-- `POST /api/meetings/{meeting_id}/interrupts`
-- `POST /api/meetings/{meeting_id}/reframe`
-- `POST /api/meetings/{meeting_id}/finalize`
 - `GET /api/meetings/{meeting_id}`
-- `GET /api/meetings/{meeting_id}/export?format=json|markdown|html`
+- `POST /api/meetings/{meeting_id}/rounds`
+- `POST /api/meetings/{meeting_id}/close`
+- `POST /api/meetings/{meeting_id}/export`
+- `GET /api/memories`
 
-## 補充說明
+## 後續方向
 
-- PostgreSQL 是本專案規格中的正式資料庫目標。
-- SQLite 只保留給測試流程使用。
-- 目前角色引擎為可測試的規則式版本，方便先把狀態機、資料流與輸出格式打通。
-- 後續可以在不改動 API 契約的前提下，替換成真正的 LLM 驅動角色流程。
-
-## Railway 部署重點
-
-本專案已提供 `railway.json`，內容已預先設定：
-
-- 啟動指令：`uvicorn app.main:create_app --factory --host 0.0.0.0 --port $PORT`
-- 健康檢查路徑：`/api/health`
-
-部署到 Railway 時，最重要的是：
-
-- Web 服務要綁定 `0.0.0.0:$PORT`
-- 專案內要有 PostgreSQL 服務
-- 應用程式服務要能讀到 `DATABASE_URL`
+- 強化前端閱讀性與會議臨場感
+- 將 OpenClaw 角色載入流程接到既有 Gateway
+- 支援更完整的本地長期記憶策略
+- 補上角色技能包與角色匯入機制

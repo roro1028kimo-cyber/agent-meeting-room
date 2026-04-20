@@ -1,387 +1,586 @@
 from __future__ import annotations
 
-import re
-from dataclasses import asdict, dataclass
+import ast
+from dataclasses import dataclass
+from pathlib import Path
 
-from app.models import InteractionState, Meeting, MeetingMode, MeetingStateLog
+import httpx
+from sqlalchemy import select
+from sqlalchemy.orm import Session, selectinload
+
+from app.config import BASE_DIR
+from app.models import (
+    AppSetting,
+    Meeting,
+    MeetingMessage,
+    MeetingParticipant,
+    MeetingStatus,
+    MemoryArchive,
+    MessageType,
+    RoleProfile,
+    RoleSource,
+)
 
 
-ROLE_LIBRARY = {
-    "ideation_interviewer": "發想訪談官",
-    "chair": "主持人",
-    "project_staff": "專案幕僚",
-    "execution_staff": "執行幕僚",
-    "risk_staff": "風險幕僚",
-    "retrospective_staff": "復盤幕僚",
+DEFAULT_SETTINGS = {
+    "api_mode": "mock",
+    "api_key": "",
+    "base_url": "https://api.openai.com/v1",
+    "model_name": "gpt-4.1-mini",
+    "temperature": 0.7,
+    "max_tokens": 700,
+    "openclaw_enabled": False,
+    "openclaw_gateway_url": "",
+    "openclaw_notes": "",
 }
 
-MODE_ROLE_MAP = {
-    MeetingMode.PRE_PROJECT: ["project_staff", "risk_staff"],
-    MeetingMode.IN_PROGRESS: ["execution_staff", "risk_staff", "project_staff"],
-    MeetingMode.POST_REVIEW: ["retrospective_staff", "execution_staff", "risk_staff"],
-}
+
+BUILTIN_ROLES = [
+    {
+        "role_key": "chair",
+        "display_name": "主持人",
+        "description": "控場、指定順序、最後收斂結論。",
+        "color": "#7dd3fc",
+        "sort_order": 1,
+        "system_prompt": """你是會議主持人。
+你的任務是：
+1. 控制討論節奏。
+2. 幫大家收斂焦點。
+3. 在最後給出短而清楚的本輪結論。
+
+發言要求：
+- 使用繁體中文。
+- 先說結論，再補充。
+- 盡量控制在 4 到 8 句。
+- 不要假裝知道不存在的事實。
+- 不要做 PM 流程式長篇報告。""",
+    },
+    {
+        "role_key": "planner",
+        "display_name": "規劃師",
+        "description": "把主題拆成方向、步驟與可行方案。",
+        "color": "#c4b5fd",
+        "sort_order": 2,
+        "system_prompt": """你是規劃師。
+你的任務是把議題拆成具體方向、步驟與選項。
+
+發言要求：
+- 使用繁體中文。
+- 先說最可行的方向。
+- 盡量給 2 到 4 個步驟。
+- 短句、清楚、可執行。""",
+    },
+    {
+        "role_key": "skeptic",
+        "display_name": "反方辯手",
+        "description": "挑戰假設，避免過度樂觀。",
+        "color": "#fca5a5",
+        "sort_order": 3,
+        "system_prompt": """你是反方辯手。
+你的任務是挑戰討論中的假設，指出過度樂觀、模糊或風險。
+
+發言要求：
+- 使用繁體中文。
+- 直接指出問題。
+- 不要情緒化。
+- 每次至少提出一個需要重想的點。""",
+    },
+    {
+        "role_key": "risk_officer",
+        "display_name": "風險官",
+        "description": "指出風險、依賴與失敗點。",
+        "color": "#fbbf24",
+        "sort_order": 4,
+        "system_prompt": """你是風險官。
+你的任務是找出可能失敗的地方、依賴條件與需要先確認的因素。
+
+發言要求：
+- 使用繁體中文。
+- 列出最重要的 2 到 3 個風險。
+- 若有風險，盡量附簡短備案。""",
+    },
+    {
+        "role_key": "executor",
+        "display_name": "執行官",
+        "description": "把討論轉成可落地動作。",
+        "color": "#6ee7b7",
+        "sort_order": 5,
+        "system_prompt": """你是執行官。
+你的任務是把目前討論轉成可以立刻採取的下一步。
+
+發言要求：
+- 使用繁體中文。
+- 優先講可立刻做的事。
+- 盡量整理成 3 到 5 個行動點。""",
+    },
+    {
+        "role_key": "recorder",
+        "display_name": "記錄員",
+        "description": "整理關鍵觀點與本輪共識。",
+        "color": "#fdba74",
+        "sort_order": 6,
+        "system_prompt": """你是記錄員。
+你的任務是把目前會議內容整理成短摘要，保留共識、分歧與下一步。
+
+發言要求：
+- 使用繁體中文。
+- 條列清楚。
+- 避免加入你自己新的推論。""",
+    },
+    {
+        "role_key": "researcher",
+        "display_name": "研究員",
+        "description": "指出背景知識缺口與需要查證的資訊。",
+        "color": "#93c5fd",
+        "sort_order": 7,
+        "system_prompt": """你是研究員。
+你的任務是指出目前資訊缺口，以及應該補查什麼資料才能讓討論更可靠。
+
+發言要求：
+- 使用繁體中文。
+- 重點放在缺什麼資訊。
+- 不要假裝你已經查證完成。""",
+    },
+    {
+        "role_key": "product_advisor",
+        "display_name": "產品顧問",
+        "description": "從使用者價值與產品角度提出看法。",
+        "color": "#f9a8d4",
+        "sort_order": 8,
+        "system_prompt": """你是產品顧問。
+你的任務是從使用者價值、定位與體驗角度給建議。
+
+發言要求：
+- 使用繁體中文。
+- 聚焦使用者會不會看懂、想用、持續使用。
+- 用簡單的產品語言。""",
+    },
+]
 
 
 @dataclass
-class RoleOutput:
-    role_id: str
-    role_name: str
-    summary: str
-    observations: list[str]
-    risks: list[str]
-    options: list[str]
-    recommended_next_step: str
+class RuntimeSettings:
+    api_mode: str
+    api_key: str
+    base_url: str
+    model_name: str
+    temperature: float
+    max_tokens: int
+    openclaw_enabled: bool
+    openclaw_gateway_url: str
+    openclaw_notes: str
 
 
-@dataclass
-class ChairOutput:
-    conclusion: str
-    confirmed_items: list[str]
-    risks: list[str]
-    pending_decisions: list[str]
-    next_actions: list[dict[str, str]]
+def ensure_defaults(session: Session) -> None:
+    for key, value in DEFAULT_SETTINGS.items():
+        if session.get(AppSetting, key) is None:
+            session.add(AppSetting(key=key, value=value))
+
+    existing = {
+        role.role_key: role
+        for role in session.execute(select(RoleProfile)).scalars().all()
+    }
+    for definition in BUILTIN_ROLES:
+        role = existing.get(definition["role_key"])
+        if role is None:
+            session.add(
+                RoleProfile(
+                    role_key=definition["role_key"],
+                    display_name=definition["display_name"],
+                    description=definition["description"],
+                    system_prompt=definition["system_prompt"],
+                    color=definition["color"],
+                    source=RoleSource.BUILTIN,
+                    enabled=True,
+                    is_builtin=True,
+                    sort_order=definition["sort_order"],
+                )
+            )
+        elif role.is_builtin:
+            role.display_name = definition["display_name"]
+            role.description = definition["description"]
+            role.system_prompt = definition["system_prompt"]
+            role.color = definition["color"]
+            role.sort_order = definition["sort_order"]
+    session.commit()
 
 
-def transition_meeting_state(
-    meeting: Meeting, target_state: InteractionState, reason: str
-) -> MeetingStateLog:
-    previous = meeting.current_state
-    meeting.current_state = target_state
-    return MeetingStateLog(
-        meeting_id=meeting.id,
-        from_state=previous,
-        to_state=target_state,
-        reason=reason,
-    )
+def load_runtime_settings(session: Session) -> RuntimeSettings:
+    settings = {key: value for key, value in DEFAULT_SETTINGS.items()}
+    for item in session.execute(select(AppSetting)).scalars().all():
+        settings[item.key] = item.value
+    return RuntimeSettings(**settings)
 
 
-def build_context_payload(data: dict) -> dict:
+def settings_to_dict(settings: RuntimeSettings) -> dict:
     return {
-        "timeline": data.get("timeline", ""),
-        "task_list": [item for item in data.get("task_list", []) if item],
-        "blockers": [item for item in data.get("blockers", []) if item],
-        "risks": [item for item in data.get("risks", []) if item],
-        "acceptance_criteria": [item for item in data.get("acceptance_criteria", []) if item],
-        "kpis": [item for item in data.get("kpis", []) if item],
-        "confirmation_notes": [],
-        "reframing_notes": [],
+        "api_mode": settings.api_mode,
+        "api_key": settings.api_key,
+        "base_url": settings.base_url,
+        "model_name": settings.model_name,
+        "temperature": settings.temperature,
+        "max_tokens": settings.max_tokens,
+        "openclaw_enabled": settings.openclaw_enabled,
+        "openclaw_gateway_url": settings.openclaw_gateway_url,
+        "openclaw_notes": settings.openclaw_notes,
     }
 
 
-def split_points(*texts: str) -> list[str]:
-    points: list[str] = []
-    for text in texts:
-        if not text:
+def update_settings(session: Session, payload: dict) -> dict:
+    for key, value in payload.items():
+        row = session.get(AppSetting, key)
+        if row is None:
+            row = AppSetting(key=key, value=value)
+            session.add(row)
+        else:
+            row.value = value
+    session.commit()
+    return settings_to_dict(load_runtime_settings(session))
+
+
+def get_roles(session: Session) -> list[RoleProfile]:
+    return session.execute(select(RoleProfile).order_by(RoleProfile.sort_order.asc(), RoleProfile.id.asc())).scalars().all()
+
+
+def get_meeting(session: Session, meeting_id: str) -> Meeting | None:
+    statement = (
+        select(Meeting)
+        .where(Meeting.id == meeting_id)
+        .options(
+            selectinload(Meeting.participants).selectinload(MeetingParticipant.role_profile),
+            selectinload(Meeting.messages),
+            selectinload(Meeting.archives),
+        )
+    )
+    return session.execute(statement).scalars().first()
+
+
+def create_meeting(session: Session, title: str, objective: str, context_text: str, selected_role_ids: list[int]) -> Meeting:
+    available_roles = get_roles(session)
+    if not selected_role_ids:
+        selected_role_ids = [role.id for role in available_roles if role.enabled][:4]
+
+    meeting = Meeting(
+        title=title,
+        objective=objective,
+        context_text=context_text,
+        status=MeetingStatus.ACTIVE,
+        temporary_memory={"notes": [], "latest_summary": "", "latest_user_input": ""},
+    )
+    session.add(meeting)
+    session.flush()
+
+    seat = 1
+    for role in available_roles:
+        if role.id not in selected_role_ids:
             continue
-        for line in text.splitlines():
-            cleaned = re.sub(r"^[\-\*\d\.\)\s]+", "", line).strip()
-            if cleaned:
-                points.append(cleaned)
-        if not points and text.strip():
-            fragments = re.split(r"[。；;!?！？]+", text)
-            points.extend(fragment.strip() for fragment in fragments if fragment.strip())
-    return dedupe(points)
+        session.add(
+            MeetingParticipant(
+                meeting_id=meeting.id,
+                role_profile_id=role.id,
+                seat_order=seat,
+                enabled=True,
+            )
+        )
+        seat += 1
 
-
-def dedupe(items: list[str]) -> list[str]:
-    seen: set[str] = set()
-    result: list[str] = []
-    for item in items:
-        cleaned = item.strip()
-        if not cleaned:
-            continue
-        key = cleaned.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        result.append(cleaned)
-    return result
-
-
-def build_meeting_bundle(
-    meeting: Meeting, user_message: str = "", applied_interrupts: list[str] | None = None
-) -> dict:
-    payload = meeting.context_payload or {}
-    applied_interrupts = applied_interrupts or []
-
-    facts = split_points(
-        meeting.background_text,
-        payload.get("timeline", ""),
-        "\n".join(payload.get("task_list", [])),
-        "\n".join(payload.get("acceptance_criteria", [])),
-        "\n".join(payload.get("kpis", [])),
-        "\n".join(payload.get("confirmation_notes", [])),
-        "\n".join(payload.get("reframing_notes", [])),
-        user_message,
-        "\n".join(applied_interrupts),
+    session.add(
+        MeetingMessage(
+            meeting_id=meeting.id,
+            role_profile_id=None,
+            role_name="系統",
+            message_type=MessageType.SYSTEM,
+            round_number=0,
+            content="會議已建立，請輸入主題補充後開始第一輪討論。",
+            meta_payload=None,
+        )
     )
-
-    explicit_risks = dedupe(payload.get("risks", []) + payload.get("blockers", []))
-    pending_decisions = infer_pending_decisions(meeting)
-
-    risks = dedupe(
-        explicit_risks
-        + infer_generic_risks(meeting, pending_decisions)
-        + [f"使用者插話待吸收：{item}" for item in applied_interrupts]
-    )
-
-    return {
-        "facts": facts,
-        "explicit_risks": explicit_risks,
-        "risks": risks,
-        "pending_decisions": pending_decisions,
-        "applied_interrupts": applied_interrupts,
-    }
+    session.commit()
+    session.expire_all()
+    return get_meeting(session, meeting.id)
 
 
-def infer_pending_decisions(meeting: Meeting) -> list[str]:
-    payload = meeting.context_payload or {}
-    pending: list[str] = []
-
-    if not payload.get("timeline"):
-        pending.append("尚未確認主要里程碑與時程")
-    if not payload.get("task_list"):
-        pending.append("尚未整理任務拆解與優先順序")
-    if not payload.get("acceptance_criteria"):
-        pending.append("尚未確認驗收標準")
-
-    if meeting.meeting_mode == MeetingMode.PRE_PROJECT:
-        pending.append("尚未指定各關鍵任務的責任人")
-    elif meeting.meeting_mode == MeetingMode.IN_PROGRESS:
-        pending.append("尚未同步本輪最優先交付與阻塞排除順序")
-    else:
-        pending.append("尚未完成成果落差與根因對照")
-
-    return dedupe(pending)
+def list_recent_meetings(session: Session) -> list[Meeting]:
+    statement = select(Meeting).order_by(Meeting.updated_at.desc()).limit(20)
+    return session.execute(statement).scalars().all()
 
 
-def infer_generic_risks(meeting: Meeting, pending_decisions: list[str]) -> list[str]:
-    risks: list[str] = []
-    if pending_decisions:
-        risks.append("若前提未先收斂，後續討論容易失焦或重工")
-
-    payload = meeting.context_payload or {}
-    if not payload.get("blockers"):
-        risks.append("目前尚未形成明確 blocker 清單，可能低估執行阻力")
-    if not payload.get("risks"):
-        risks.append("目前風險盤點仍偏初步，建議盡快排序處理優先級")
-    if meeting.meeting_mode == MeetingMode.POST_REVIEW and not payload.get("kpis"):
-        risks.append("缺少成效數據時，復盤結論容易停留在印象層級")
-
-    return dedupe(risks)
+def list_archives(session: Session) -> list[MemoryArchive]:
+    statement = select(MemoryArchive).order_by(MemoryArchive.created_at.desc()).limit(50)
+    return session.execute(statement).scalars().all()
 
 
-def build_intake_message(meeting: Meeting) -> dict:
-    bundle = build_meeting_bundle(meeting)
-    known_items = bundle["facts"][:4] or ["已建立會議主題，待補齊背景資料"]
-    pending = bundle["pending_decisions"][:4]
+def run_meeting_round(session: Session, meeting_id: str, user_input: str) -> Meeting:
+    meeting = get_meeting(session, meeting_id)
+    if meeting is None:
+        raise ValueError("Meeting not found.")
+    if meeting.status == MeetingStatus.CLOSED:
+        raise ValueError("Meeting is already closed.")
 
-    content = "\n".join(
-        [
-            "結論：",
-            "已收到這次會議需求，建議先確認會議前提，再進入正式多角色討論。",
-            "",
-            "已知資訊：",
-            *[f"{index}. {item}" for index, item in enumerate(known_items, start=1)],
-            "",
-            "待確認：",
-            *[f"{index}. {item}" for index, item in enumerate(pending, start=1)],
-            "",
-            "下一步：",
-            "請補充或確認前提，完成後即可進入正式會議。",
-        ]
-    )
+    runtime = load_runtime_settings(session)
+    round_number = meeting.round_count + 1
+    trimmed_input = user_input.strip()
 
-    return {
-        "content": content,
-        "structured_payload": {
-            "summary": "先完成前提確認，再進入正式會議。",
-            "known_items": known_items,
-            "pending_items": pending,
-        },
-    }
+    memory = dict(meeting.temporary_memory or {})
+    memory.setdefault("notes", [])
 
-
-def build_role_outputs(
-    meeting: Meeting, user_message: str = "", applied_interrupts: list[str] | None = None
-) -> list[RoleOutput]:
-    bundle = build_meeting_bundle(meeting, user_message=user_message, applied_interrupts=applied_interrupts)
-    role_ids = MODE_ROLE_MAP[meeting.meeting_mode]
-    outputs: list[RoleOutput] = []
-
-    for role_id in role_ids:
-        outputs.append(generate_role_output(role_id, meeting.meeting_mode, bundle))
-
-    return outputs
-
-
-def generate_role_output(role_id: str, meeting_mode: MeetingMode, bundle: dict) -> RoleOutput:
-    facts = bundle["facts"] or ["目前會議仍需更多具體背景資料支撐。"]
-    risks = bundle["risks"] or ["目前未發現明確高風險，但建議持續盤點。"]
-    pending = bundle["pending_decisions"]
-
-    if role_id == "project_staff":
-        summary = {
-            MeetingMode.PRE_PROJECT: "建議先鎖定範圍、里程碑與責任人，再展開第一版執行。",
-            MeetingMode.IN_PROGRESS: "目前應先收斂本輪最重要交付，避免排程持續分散。",
-            MeetingMode.POST_REVIEW: "建議將原始目標、實際結果與差距並排整理，才能形成有效復盤。",
-        }[meeting_mode]
-        observations = facts[:3]
-        role_risks = dedupe(risks[:2] + pending[:1])
-        options = [
-            "先整理本輪範圍與不做項目，避免討論持續擴張。",
-            "先排出里程碑與前置依賴，再決定任務順序。",
-            "先確認責任分工，再讓各角色回報進度。",
-        ]
-        next_step = "由專案幕僚整理範圍、時程與責任人草案，交由主持人收斂。"
-    elif role_id == "execution_staff":
-        summary = {
-            MeetingMode.PRE_PROJECT: "執行前建議先把交付順序與前置條件排清楚。",
-            MeetingMode.IN_PROGRESS: "目前最務實的做法是先處理阻塞，再保住本輪承諾交付。",
-            MeetingMode.POST_REVIEW: "應先還原實際執行過程，才能判斷哪些偏差可避免。",
-        }[meeting_mode]
-        observations = (facts[:2] + pending[:1])[:3]
-        role_risks = dedupe(risks[:2])
-        options = [
-            "先處理最卡的 blocker，再排其他事項。",
-            "將未完成事項重排優先級，避免資源平均分散。",
-            "同步可立即交付與需延後處理的項目。",
-        ]
-        next_step = "由執行幕僚更新完成、進行中與卡點清單，作為下一輪追蹤基準。"
-    elif role_id == "retrospective_staff":
-        summary = "建議先把做得好的地方、失誤點與根因拆開記錄，避免復盤流於印象。"
-        observations = (facts[:2] + pending[:1])[:3]
-        role_risks = dedupe(risks[:2] + ["若未明確對照根因，改善措施容易流於口號。"])
-        options = [
-            "先還原事件時間線，再討論責任與改善。",
-            "區分偶發失誤與結構性問題，避免過度修正。",
-            "先定下一次要保留與要修正的做法。",
-        ]
-        next_step = "由復盤幕僚整理結果、差距與根因對照表，主持人再收斂改善方案。"
-    else:
-        summary = {
-            MeetingMode.PRE_PROJECT: "目前最大風險在於前提未完全收斂就直接進入執行。",
-            MeetingMode.IN_PROGRESS: "目前最大風險在於 blocker 與決策延遲同步不足。",
-            MeetingMode.POST_REVIEW: "目前最大風險在於缺少數據或事實基礎，導致復盤偏主觀。",
-        }[meeting_mode]
-        observations = risks[:3]
-        role_risks = dedupe(risks[:3])
-        options = [
-            "先排序高風險項目，避免每個問題都同時處理。",
-            "針對每個高風險項目指定一個備援方案。",
-            "把需要主管決策的項目獨立拉出，縮短等待時間。",
-        ]
-        next_step = "由風險幕僚列出高、中、低風險與備案，主持人確認哪些需立即升級。"
-
-    return RoleOutput(
-        role_id=role_id,
-        role_name=ROLE_LIBRARY[role_id],
-        summary=summary,
-        observations=dedupe(observations)[:3],
-        risks=dedupe(role_risks)[:3],
-        options=options[:3],
-        recommended_next_step=next_step,
-    )
-
-
-def role_output_to_message(output: RoleOutput) -> dict:
-    content = "\n".join(
-        [
-            "結論：",
-            output.summary,
-            "",
-            "觀察：",
-            *[f"{index}. {item}" for index, item in enumerate(output.observations, start=1)],
-            "",
-            "風險：",
-            *[f"{index}. {item}" for index, item in enumerate(output.risks, start=1)],
-            "",
-            "方案：",
-            *[f"{index}. {item}" for index, item in enumerate(output.options, start=1)],
-            "",
-            "下一步：",
-            output.recommended_next_step,
-        ]
-    )
-    return {"content": content, "structured_payload": asdict(output)}
-
-
-def build_chair_output(meeting: Meeting, role_outputs: list[RoleOutput], bundle: dict) -> ChairOutput:
-    confirmed_items = bundle["facts"][:4] or ["目前已有基本背景資料可供討論。"]
-    risks = dedupe([risk for output in role_outputs for risk in output.risks])[:4]
-    pending_decisions = bundle["pending_decisions"][:4]
-    next_actions = build_next_actions(meeting.meeting_mode, pending_decisions)
-
-    if meeting.meeting_mode == MeetingMode.PRE_PROJECT:
-        conclusion = "目前可先以 MVP 方式啟動，但本輪後應優先補齊範圍、時程與驗收標準。"
-    elif meeting.meeting_mode == MeetingMode.IN_PROGRESS:
-        conclusion = "目前建議先保住本輪關鍵交付，並把阻塞與決策需求集中處理。"
-    else:
-        conclusion = "目前可先完成復盤初稿，但仍需用結果與根因對照來支撐改善決策。"
-
-    return ChairOutput(
-        conclusion=conclusion,
-        confirmed_items=confirmed_items,
-        risks=risks,
-        pending_decisions=pending_decisions,
-        next_actions=next_actions,
-    )
-
-
-def build_next_actions(meeting_mode: MeetingMode, pending_decisions: list[str]) -> list[dict[str, str]]:
-    if meeting_mode == MeetingMode.PRE_PROJECT:
-        actions = [
-            {"task": "整理範圍與不做清單", "owner": "專案幕僚", "due": "本輪後"},
-            {"task": "確認主要風險與備案", "owner": "風險幕僚", "due": "本週"},
-            {"task": "補齊驗收標準", "owner": "主持人", "due": "開始執行前"},
-        ]
-    elif meeting_mode == MeetingMode.IN_PROGRESS:
-        actions = [
-            {"task": "更新完成與進行中清單", "owner": "執行幕僚", "due": "今日"},
-            {"task": "排定 blocker 解法與責任人", "owner": "風險幕僚", "due": "今日"},
-            {"task": "確認下一個里程碑", "owner": "主持人", "due": "本輪後"},
-        ]
-    else:
-        actions = [
-            {"task": "整理成果與落差對照表", "owner": "復盤幕僚", "due": "本輪後"},
-            {"task": "補齊根因與改善方案", "owner": "主持人", "due": "本週"},
-            {"task": "指定改善方案責任人", "owner": "專案幕僚", "due": "本週"},
-        ]
-
-    if pending_decisions:
-        actions.insert(
-            0,
-            {
-                "task": f"先處理待決事項：{pending_decisions[0]}",
-                "owner": "主持人",
-                "due": "立即",
-            },
+    if trimmed_input:
+        memory["latest_user_input"] = trimmed_input
+        memory["notes"].append(f"使用者補充：{trimmed_input}")
+        session.add(
+            MeetingMessage(
+                meeting_id=meeting.id,
+                role_profile_id=None,
+                role_name="使用者",
+                message_type=MessageType.USER,
+                round_number=round_number,
+                content=trimmed_input,
+                meta_payload=None,
+            )
         )
 
-    return actions[:4]
+    transcript = build_transcript(meeting)
+    participant_roles = [participant.role_profile for participant in sorted(meeting.participants, key=lambda item: item.seat_order) if participant.enabled]
+
+    generated_messages: list[tuple[RoleProfile, str]] = []
+    for role in participant_roles:
+        reply = generate_role_reply(runtime, role, meeting, transcript, trimmed_input)
+        generated_messages.append((role, reply))
+        transcript.append({"role": role.display_name, "content": reply})
+        session.add(
+            MeetingMessage(
+                meeting_id=meeting.id,
+                role_profile_id=role.id,
+                role_name=role.display_name,
+                message_type=MessageType.AGENT,
+                round_number=round_number,
+                content=reply,
+                meta_payload={"source": role.source.value},
+            )
+        )
+
+    summary_text = build_round_summary(meeting, generated_messages, trimmed_input)
+    meeting.round_count = round_number
+    memory["latest_summary"] = summary_text
+    memory["notes"].append(f"第 {round_number} 輪摘要：{summary_text}")
+    meeting.temporary_memory = memory
+
+    session.add(
+        MeetingMessage(
+            meeting_id=meeting.id,
+            role_profile_id=None,
+            role_name="會議室",
+            message_type=MessageType.SUMMARY,
+            round_number=round_number,
+            content=summary_text,
+            meta_payload={"kind": "round_summary"},
+        )
+    )
+    session.commit()
+    session.expire_all()
+    return get_meeting(session, meeting.id)
 
 
-def chair_output_to_message(output: ChairOutput) -> dict:
-    content = "\n".join(
+def close_meeting(session: Session, meeting_id: str) -> Meeting:
+    meeting = get_meeting(session, meeting_id)
+    if meeting is None:
+        raise ValueError("Meeting not found.")
+    meeting.status = MeetingStatus.CLOSED
+    session.commit()
+    session.expire_all()
+    return get_meeting(session, meeting_id)
+
+
+def export_meeting(session: Session, meeting_id: str, export_format: str, archive: bool) -> dict:
+    meeting = get_meeting(session, meeting_id)
+    if meeting is None:
+        raise ValueError("Meeting not found.")
+
+    transcript = [
+        {
+            "round": message.round_number,
+            "speaker": message.role_name,
+            "type": message.message_type.value,
+            "content": message.content,
+        }
+        for message in sorted(meeting.messages, key=lambda item: (item.round_number, item.id))
+    ]
+
+    if export_format == "text":
+        content = build_text_export(meeting, transcript)
+        suffix = "txt"
+    else:
+        content = build_python_export(meeting, transcript)
+        suffix = "py"
+
+    file_path = None
+    if archive:
+        export_dir = BASE_DIR / "exports"
+        export_dir.mkdir(exist_ok=True)
+        safe_name = "".join(ch if ch.isalnum() else "_" for ch in meeting.title)[:40].strip("_") or "meeting"
+        file_name = f"{meeting.id}_{safe_name}.{suffix}"
+        file_path = str(export_dir / file_name)
+        Path(file_path).write_text(content, encoding="utf-8")
+        session.add(
+            MemoryArchive(
+                meeting_id=meeting.id,
+                export_format=export_format,
+                file_path=file_path,
+                summary=meeting.temporary_memory.get("latest_summary", ""),
+            )
+        )
+        memory = dict(meeting.temporary_memory or {})
+        memory.setdefault("notes", [])
+        memory["notes"].append(f"已匯出 {export_format} 檔案：{file_path}")
+        meeting.temporary_memory = memory
+        session.commit()
+
+    return {
+        "meeting_id": meeting.id,
+        "export_format": export_format,
+        "file_path": file_path,
+        "content": content,
+        "archived": archive,
+    }
+
+
+def build_transcript(meeting: Meeting) -> list[dict[str, str]]:
+    items = [
+        {"role": "會議主題", "content": meeting.title},
+        {"role": "會議目標", "content": meeting.objective or "未指定"},
+        {"role": "背景", "content": meeting.context_text or "未提供"},
+    ]
+    for message in sorted(meeting.messages, key=lambda item: (item.round_number, item.id))[-12:]:
+        items.append({"role": message.role_name, "content": message.content})
+    return items
+
+
+def generate_role_reply(runtime: RuntimeSettings, role: RoleProfile, meeting: Meeting, transcript: list[dict], user_input: str) -> str:
+    if runtime.api_mode == "openai_compatible" and runtime.api_key:
+        try:
+            return call_openai_compatible(runtime, role, meeting, transcript, user_input)
+        except Exception as exc:
+            return build_fallback_reply(role, meeting, user_input, transcript, reason=f"模型呼叫失敗：{exc}")
+    return build_fallback_reply(role, meeting, user_input, transcript)
+
+
+def call_openai_compatible(runtime: RuntimeSettings, role: RoleProfile, meeting: Meeting, transcript: list[dict], user_input: str) -> str:
+    messages = [
+        {"role": "system", "content": role.system_prompt},
+        {
+            "role": "user",
+            "content": "\n".join(
+                [
+                    f"會議主題：{meeting.title}",
+                    f"會議目標：{meeting.objective or '未指定'}",
+                    f"背景：{meeting.context_text or '未提供'}",
+                    f"本輪使用者輸入：{user_input or '無'}",
+                    "最近討論：",
+                    *[f"- {item['role']}：{item['content']}" for item in transcript[-10:]],
+                    "",
+                    "請你以你的角色定位發言，使用繁體中文，控制在 4 到 8 句。",
+                ]
+            ),
+        },
+    ]
+
+    response = httpx.post(
+        f"{runtime.base_url.rstrip('/')}/chat/completions",
+        headers={
+            "Authorization": f"Bearer {runtime.api_key}",
+            "Content-Type": "application/json",
+        },
+        json={
+            "model": role.model_override or runtime.model_name,
+            "messages": messages,
+            "temperature": runtime.temperature,
+            "max_tokens": runtime.max_tokens,
+            "stream": False,
+        },
+        timeout=60.0,
+    )
+    response.raise_for_status()
+    data = response.json()
+    return data["choices"][0]["message"]["content"].strip()
+
+
+def build_fallback_reply(role: RoleProfile, meeting: Meeting, user_input: str, transcript: list[dict], reason: str | None = None) -> str:
+    latest_points = [item["content"] for item in transcript[-3:]]
+    context_hint = "；".join(latest_points) if latest_points else "目前討論剛開始。"
+
+    style_map = {
+        "chair": f"結論：本輪建議先聚焦在「{meeting.title}」，避免討論擴散。觀察：{context_hint}。下一步：請每位角色只補最重要的一點。",
+        "planner": f"我建議先把「{meeting.title}」拆成目標、限制、下一步三塊。依目前內容看，先處理：{user_input or '補齊背景'}。",
+        "skeptic": f"我想挑戰一個假設：我們可能把議題講得太快。若不先確認背景與限制，後面容易各說各話。",
+        "risk_officer": f"目前最值得先注意的是資訊不足、範圍過大與執行落差。若不先收斂，這場會議很容易失焦。",
+        "executor": f"如果要讓這輪討論往前走，我建議先做三件事：定義目標、確認參與角色、產出一版短結論。",
+        "recorder": f"目前可先記下三個重點：會議主題是「{meeting.title}」、使用者最新補充是「{user_input or '尚無'}」、本輪需要收斂下一步。",
+        "researcher": "目前最大的問題不是答案不夠，而是缺少背景資訊。建議先補：定義、限制、使用情境、成功標準。",
+        "product_advisor": f"從產品角度看，這場會議要先確認使用者真的在意什麼。若主題是「{meeting.title}」，那最需要先講清楚的是價值。",
+    }
+    reply = style_map.get(role.role_key, f"我會以「{role.display_name}」的角度回應這個主題，先聚焦於最重要的一點，再補充下一步。")
+    if role.source == RoleSource.OPENCLAW:
+        reply = f"此席位目前標記為 OpenClaw 預留角色。本版尚未直接橋接 OpenClaw Gateway，因此先以保留席位方式參與討論。"
+    if reason:
+        reply = f"{reply}\n\n備註：{reason}"
+    return reply
+
+
+def build_round_summary(meeting: Meeting, generated_messages: list[tuple[RoleProfile, str]], user_input: str) -> str:
+    key_lines = [f"- {role.display_name}：{extract_first_sentence(content)}" for role, content in generated_messages[:4]]
+    return "\n".join(
         [
-            "目前結論：",
-            output.conclusion,
-            "",
-            "已確認事項：",
-            *[f"{index}. {item}" for index, item in enumerate(output.confirmed_items, start=1)],
-            "",
-            "主要風險：",
-            *[f"{index}. {item}" for index, item in enumerate(output.risks, start=1)],
-            "",
-            "待決事項：",
-            *[f"{index}. {item}" for index, item in enumerate(output.pending_decisions, start=1)],
-            "",
-            "下一步：",
-            *[
-                f"{index}. {action['task']} / {action['owner']} / {action['due']}"
-                for index, action in enumerate(output.next_actions, start=1)
-            ],
+            f"第 {meeting.round_count + 1} 輪摘要",
+            f"主題：{meeting.title}",
+            f"使用者補充：{user_input or '本輪未新增補充'}",
+            "本輪重點：",
+            *key_lines,
+            "建議下一步：由使用者決定是否再開下一輪，或直接匯出為長期記憶。",
         ]
     )
-    return {"content": content, "structured_payload": asdict(output)}
 
+
+def extract_first_sentence(content: str) -> str:
+    line = content.strip().splitlines()[0] if content.strip() else ""
+    if len(line) > 80:
+        return line[:77] + "..."
+    return line
+
+
+def build_text_export(meeting: Meeting, transcript: list[dict]) -> str:
+    lines = [
+        f"會議標題：{meeting.title}",
+        f"會議目標：{meeting.objective or '未指定'}",
+        f"會議狀態：{meeting.status.value}",
+        f"總輪次：{meeting.round_count}",
+        "",
+        "=== 會議逐字內容 ===",
+        "",
+    ]
+    for item in transcript:
+        lines.extend(
+            [
+                f"[Round {item['round']}] {item['speaker']} ({item['type']})",
+                item["content"],
+                "",
+            ]
+        )
+    return "\n".join(lines).strip() + "\n"
+
+
+def build_python_export(meeting: Meeting, transcript: list[dict]) -> str:
+    payload = {
+        "title": meeting.title,
+        "objective": meeting.objective,
+        "status": meeting.status.value,
+        "round_count": meeting.round_count,
+        "temporary_memory": meeting.temporary_memory,
+        "messages": transcript,
+    }
+    return "MEETING_ARCHIVE = " + repr(payload) + "\n"
+
+
+def parse_python_archive(content: str) -> dict:
+    prefix = "MEETING_ARCHIVE = "
+    raw = content[len(prefix):] if content.startswith(prefix) else content
+    return ast.literal_eval(raw)

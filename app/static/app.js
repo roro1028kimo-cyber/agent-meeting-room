@@ -1,30 +1,40 @@
 const state = {
-  meetingId: null,
+  settings: null,
+  roles: [],
   meeting: null,
+  memories: [],
 };
 
-const createMeetingForm = document.getElementById("create-meeting-form");
-const discussionForm = document.getElementById("discussion-form");
-const interruptForm = document.getElementById("interrupt-form");
-const reframeForm = document.getElementById("reframe-form");
-const confirmButton = document.getElementById("confirm-button");
-const finalizeButton = document.getElementById("finalize-button");
-const exportButtons = Array.from(document.querySelectorAll(".export-button"));
-const timeline = document.getElementById("timeline");
-const summaryCard = document.getElementById("summary-card");
-const interruptList = document.getElementById("interrupt-list");
-const meetingStatePill = document.getElementById("meeting-state-pill");
-const meetingModePill = document.getElementById("meeting-mode-pill");
-const meetingIdText = document.getElementById("meeting-id-text");
-const discussionSubmit = document.getElementById("discussion-submit");
-const interruptSubmit = document.getElementById("interrupt-submit");
-const reframeSubmit = document.getElementById("reframe-submit");
+const els = {
+  conversationList: document.getElementById("conversation-list"),
+  meetingTitle: document.getElementById("meeting-title"),
+  meetingObjective: document.getElementById("meeting-objective"),
+  meetingStatus: document.getElementById("meeting-status"),
+  meetingRound: document.getElementById("meeting-round"),
+  agentList: document.getElementById("agent-list"),
+  archiveList: document.getElementById("archive-list"),
+  memoryPreview: document.getElementById("memory-preview"),
+  roundInput: document.getElementById("round-input"),
+  noteInput: document.getElementById("note-input"),
+  runRoundButton: document.getElementById("run-round-button"),
+  closeMeetingButton: document.getElementById("close-meeting-button"),
+  exportTextButton: document.getElementById("export-text-button"),
+  exportPythonButton: document.getElementById("export-python-button"),
+  settingsDrawer: document.getElementById("settings-drawer"),
+  meetingModal: document.getElementById("meeting-modal"),
+  settingsForm: document.getElementById("settings-form"),
+  roleEditorList: document.getElementById("role-editor-list"),
+  meetingRolePicker: document.getElementById("meeting-role-picker"),
+  meetingForm: document.getElementById("meeting-form"),
+  roleTemplate: document.getElementById("role-editor-template"),
+};
 
-function textToLines(value) {
-  return value
-    .split(/\r?\n/)
-    .map((item) => item.trim())
-    .filter(Boolean);
+function escapeHtml(value = "") {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
 
 async function request(url, options = {}) {
@@ -36,55 +46,156 @@ async function request(url, options = {}) {
     ...options,
   });
 
-  if (!response.ok) {
-    const error = await response.text();
-    throw new Error(error || "Request failed");
-  }
-
   const contentType = response.headers.get("content-type") || "";
-  if (contentType.includes("application/json")) {
-    return response.json();
+  const payload = contentType.includes("application/json")
+    ? await response.json()
+    : await response.text();
+
+  if (!response.ok) {
+    const detail = typeof payload === "string" ? payload : JSON.stringify(payload);
+    throw new Error(detail);
   }
-  return response.text();
+  return payload;
+}
+
+async function bootstrap() {
+  const payload = await request("/api/bootstrap");
+  state.settings = payload.settings;
+  state.roles = payload.roles;
+  state.memories = payload.memories;
+  renderSettings();
+  renderRoleEditors();
+  renderRolePicker();
+  renderArchives();
+  renderMeeting(null);
+  if (payload.meetings.length) {
+    const latest = await request(`/api/meetings/${payload.meetings[0].id}`);
+    renderMeeting(latest);
+  }
+}
+
+function renderSettings() {
+  const settings = state.settings;
+  document.getElementById("settings-api-mode").value = settings.api_mode;
+  document.getElementById("settings-api-key").value = settings.api_key || "";
+  document.getElementById("settings-base-url").value = settings.base_url || "";
+  document.getElementById("settings-model-name").value = settings.model_name || "";
+  document.getElementById("settings-temperature").value = settings.temperature ?? 0.7;
+  document.getElementById("settings-max-tokens").value = settings.max_tokens ?? 700;
+  document.getElementById("settings-openclaw-url").value = settings.openclaw_gateway_url || "";
+  document.getElementById("settings-openclaw-notes").value = settings.openclaw_notes || "";
+}
+
+function renderRoleEditors() {
+  els.roleEditorList.innerHTML = "";
+  state.roles.forEach((role) => {
+    const fragment = els.roleTemplate.content.cloneNode(true);
+    fragment.querySelector("[data-role-name]").textContent = role.display_name;
+    fragment.querySelector("[data-role-type]").textContent = role.source;
+    fragment.querySelector("[data-role-enabled]").checked = role.enabled;
+    fragment.querySelector('[data-role-field="display_name"]').value = role.display_name;
+    fragment.querySelector('[data-role-field="description"]').value = role.description;
+    fragment.querySelector('[data-role-field="system_prompt"]').value = role.system_prompt;
+    fragment.querySelector('[data-role-field="color"]').value = role.color;
+
+    fragment.querySelector("[data-role-save]").addEventListener("click", async (event) => {
+      event.preventDefault();
+      const card = event.target.closest(".role-editor-card");
+      const payload = {
+        display_name: card.querySelector('[data-role-field="display_name"]').value,
+        description: card.querySelector('[data-role-field="description"]').value,
+        system_prompt: card.querySelector('[data-role-field="system_prompt"]').value,
+        color: card.querySelector('[data-role-field="color"]').value,
+        enabled: card.querySelector("[data-role-enabled]").checked,
+      };
+      const updated = await request(`/api/roles/${role.id}`, {
+        method: "PUT",
+        body: JSON.stringify(payload),
+      });
+      state.roles = state.roles.map((item) => (item.id === updated.id ? updated : item));
+      renderRoleEditors();
+      renderRolePicker();
+      if (state.meeting) {
+        const refreshed = await request(`/api/meetings/${state.meeting.id}`);
+        renderMeeting(refreshed);
+      }
+    });
+
+    els.roleEditorList.appendChild(fragment);
+  });
+}
+
+function renderRolePicker() {
+  els.meetingRolePicker.innerHTML = state.roles
+    .filter((role) => role.enabled)
+    .map(
+      (role, index) => `
+        <label class="role-pick-card">
+          <input type="checkbox" name="selected_role_ids" value="${role.id}" ${index < 4 ? "checked" : ""} />
+          <div>
+            <strong>${escapeHtml(role.display_name)}</strong>
+            <div class="muted">${escapeHtml(role.description)}</div>
+          </div>
+        </label>
+      `
+    )
+    .join("");
 }
 
 function renderMeeting(meeting) {
   state.meeting = meeting;
-  state.meetingId = meeting.id;
-
-  meetingStatePill.textContent = meeting.current_state;
-  meetingModePill.textContent = meeting.meeting_mode;
-  meetingIdText.textContent = `meeting_id: ${meeting.id}`;
-
-  discussionSubmit.disabled = false;
-  interruptSubmit.disabled = false;
-  reframeSubmit.disabled = false;
-  confirmButton.disabled = false;
-  finalizeButton.disabled = false;
-  exportButtons.forEach((button) => {
-    button.disabled = false;
-  });
-
-  renderTimeline(meeting.messages || []);
-  renderSummary(meeting.chair_summary || {});
-  renderInterrupts(meeting.interrupts || []);
-}
-
-function renderTimeline(messages) {
-  if (!messages.length) {
-    timeline.className = "timeline empty";
-    timeline.textContent = "目前尚無會議訊息。";
+  if (!meeting) {
+    els.meetingTitle.textContent = "尚未建立會議";
+    els.meetingObjective.textContent = "請先建立一場新會議。";
+    els.meetingStatus.textContent = "待命";
+    els.meetingRound.textContent = "Round 0";
+    els.conversationList.className = "conversation-list empty";
+    els.conversationList.textContent = "建立會議後，這裡會顯示使用者與各個 agent 的逐輪討論。";
+    els.agentList.className = "agent-list empty";
+    els.agentList.textContent = "尚未建立會議。";
+    els.memoryPreview.className = "memory-preview empty";
+    els.memoryPreview.textContent = "尚無暫存記憶。";
+    toggleMeetingControls(false);
     return;
   }
 
-  timeline.className = "timeline";
-  timeline.innerHTML = messages
+  els.meetingTitle.textContent = meeting.title;
+  els.meetingObjective.textContent = meeting.objective || "未設定會議目標。";
+  els.meetingStatus.textContent = meeting.status;
+  els.meetingRound.textContent = `Round ${meeting.round_count}`;
+  toggleMeetingControls(true);
+  renderMessages(meeting.messages || []);
+  renderParticipants(meeting.participants || []);
+  renderTemporaryMemory(meeting.temporary_memory || {});
+  renderArchives(meeting.archives || state.memories);
+}
+
+function toggleMeetingControls(enabled) {
+  els.runRoundButton.disabled = !enabled;
+  els.closeMeetingButton.disabled = !enabled;
+  els.exportTextButton.disabled = !enabled;
+  els.exportPythonButton.disabled = !enabled;
+}
+
+function renderMessages(messages) {
+  if (!messages.length) {
+    els.conversationList.className = "conversation-list empty";
+    els.conversationList.textContent = "這場會議還沒有任何內容。";
+    return;
+  }
+  const latestAgent = [...messages].reverse().find((item) => item.message_type === "agent");
+  els.conversationList.className = "conversation-list";
+  els.conversationList.innerHTML = messages
     .map((message) => {
+      const active = latestAgent && latestAgent.id === message.id;
       return `
-        <article class="message-card">
+        <article class="message-card ${active ? "active" : ""}">
           <div class="message-meta">
-            <span class="role-tag">${message.role_name}</span>
-            <span class="message-type">${message.message_type}</span>
+            <div class="speaker">
+              <span class="light ${active ? "on" : ""}"></span>
+              <strong>${escapeHtml(message.role_name)}</strong>
+            </div>
+            <span class="message-type">${escapeHtml(message.message_type)} / Round ${message.round_number}</span>
           </div>
           <div class="message-body">${escapeHtml(message.content)}</div>
         </article>
@@ -93,230 +204,204 @@ function renderTimeline(messages) {
     .join("");
 }
 
-function renderSummary(summary) {
-  if (!summary.conclusion) {
-    summaryCard.className = "summary-card empty";
-    summaryCard.textContent = "尚未產出摘要。";
+function renderParticipants(participants) {
+  if (!participants.length) {
+    els.agentList.className = "agent-list empty";
+    els.agentList.textContent = "尚未建立會議。";
     return;
   }
 
-  summaryCard.className = "summary-card";
-  summaryCard.innerHTML = `
-    <section class="summary-block">
-      <h3>目前結論</h3>
-      <p>${escapeHtml(summary.conclusion)}</p>
-    </section>
-    <section class="summary-block">
-      <h3>已確認事項</h3>
-      ${renderList(summary.confirmed_items)}
-    </section>
-    <section class="summary-block">
-      <h3>主要風險</h3>
-      ${renderList(summary.risks)}
-    </section>
-    <section class="summary-block">
-      <h3>待決事項</h3>
-      ${renderList(summary.pending_decisions)}
-    </section>
-    <section class="summary-block">
-      <h3>下一步</h3>
-      <ul>
-        ${(summary.next_actions || [])
-          .map(
-            (item) =>
-              `<li>${escapeHtml(item.task)} / ${escapeHtml(item.owner)} / ${escapeHtml(
-                item.due
-              )}</li>`
-          )
-          .join("")}
-      </ul>
-    </section>
+  const latestAgentName = [...(state.meeting?.messages || [])]
+    .reverse()
+    .find((item) => item.message_type === "agent")?.role_name;
+
+  els.agentList.className = "agent-list";
+  els.agentList.innerHTML = participants
+    .map((participant) => {
+      const isActive = latestAgentName === participant.role.display_name;
+      return `
+        <article class="agent-card">
+          <div class="agent-row">
+            <div class="agent-chip">
+              <span class="light on" style="background:${escapeHtml(participant.role.color)}"></span>
+              <strong>${escapeHtml(participant.role.display_name)}</strong>
+            </div>
+            <span>${isActive ? "發言中" : "待命"}</span>
+          </div>
+          <div class="agent-role">${escapeHtml(participant.role.description)}</div>
+          <div class="agent-source">${escapeHtml(participant.role.source)}</div>
+        </article>
+      `;
+    })
+    .join("");
+}
+
+function renderTemporaryMemory(memory) {
+  const notes = memory.notes || [];
+  const latestSummary = memory.latest_summary || "";
+  if (!notes.length && !latestSummary) {
+    els.memoryPreview.className = "memory-preview empty";
+    els.memoryPreview.textContent = "尚無暫存記憶。";
+    return;
+  }
+  els.memoryPreview.className = "memory-preview";
+  els.memoryPreview.innerHTML = `
+    <article class="memory-card">
+      <strong>最新摘要</strong>
+      <div class="message-body">${escapeHtml(latestSummary || "尚未產生")}</div>
+    </article>
+    ${notes
+      .slice(-5)
+      .reverse()
+      .map(
+        (note) => `
+          <article class="memory-card">
+            <div class="message-body">${escapeHtml(note)}</div>
+          </article>
+        `
+      )
+      .join("")}
   `;
 }
 
-function renderInterrupts(interrupts) {
-  if (!interrupts.length) {
-    interruptList.className = "interrupt-list empty";
-    interruptList.textContent = "目前沒有待處理插話。";
+function renderArchives(source = state.memories) {
+  const archives = Array.isArray(source) ? source : [];
+  state.memories = archives;
+  if (!archives.length) {
+    els.archiveList.className = "archive-list empty";
+    els.archiveList.textContent = "尚未存入長期記憶。";
     return;
   }
-
-  interruptList.className = "interrupt-list";
-  interruptList.innerHTML = interrupts
+  els.archiveList.className = "archive-list";
+  els.archiveList.innerHTML = archives
     .map(
       (item) => `
-        <article class="interrupt-item">
-          <span class="interrupt-badge">${item.priority} / ${item.status}</span>
-          <div>${escapeHtml(item.message)}</div>
+        <article class="archive-card">
+          <strong>${escapeHtml(item.export_format.toUpperCase())}</strong>
+          <div class="muted">${escapeHtml(item.summary || "無摘要")}</div>
+          <div class="muted">${escapeHtml(item.file_path || "")}</div>
         </article>
       `
     )
     .join("");
 }
 
-function renderList(items = []) {
-  if (!items.length) {
-    return "<p>目前沒有資料。</p>";
-  }
-  return `<ul>${items.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`;
-}
-
-function escapeHtml(value = "") {
-  return value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-createMeetingForm.addEventListener("submit", async (event) => {
+async function saveSettings(event) {
   event.preventDefault();
-  const formData = new FormData(createMeetingForm);
   const payload = {
-    topic: formData.get("topic"),
-    meeting_mode: formData.get("meeting_mode"),
-    background: formData.get("background") || "",
-    timeline: formData.get("timeline") || "",
-    task_list: textToLines(formData.get("task_list") || ""),
-    blockers: textToLines(formData.get("blockers") || ""),
-    risks: textToLines(formData.get("risks") || ""),
-    acceptance_criteria: textToLines(formData.get("acceptance_criteria") || ""),
-    kpis: [],
+    api_mode: document.getElementById("settings-api-mode").value,
+    api_key: document.getElementById("settings-api-key").value,
+    base_url: document.getElementById("settings-base-url").value,
+    model_name: document.getElementById("settings-model-name").value,
+    temperature: Number(document.getElementById("settings-temperature").value || 0.7),
+    max_tokens: Number(document.getElementById("settings-max-tokens").value || 700),
+    openclaw_enabled: Boolean(document.getElementById("settings-openclaw-url").value),
+    openclaw_gateway_url: document.getElementById("settings-openclaw-url").value,
+    openclaw_notes: document.getElementById("settings-openclaw-notes").value,
   };
-
-  try {
-    const meeting = await request("/api/meetings", {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    renderMeeting(meeting);
-  } catch (error) {
-    alert(`建立會議失敗：${error.message}`);
-  }
-});
-
-discussionForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (!state.meetingId) {
-    return;
-  }
-
-  const formData = new FormData(discussionForm);
-  const payload = {
-    message: formData.get("message") || "",
-  };
-
-  try {
-    const meeting = await request(`/api/meetings/${state.meetingId}/discussion`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    discussionForm.reset();
-    renderMeeting(meeting);
-  } catch (error) {
-    alert(`送出討論失敗：${error.message}`);
-  }
-});
-
-interruptForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (!state.meetingId) {
-    return;
-  }
-
-  const formData = new FormData(interruptForm);
-  const payload = {
-    message: formData.get("message") || "",
-    priority: formData.get("priority"),
-    mode: "meeting",
-  };
-
-  try {
-    const meeting = await request(`/api/meetings/${state.meetingId}/interrupts`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    interruptForm.reset();
-    renderMeeting(meeting);
-  } catch (error) {
-    alert(`提交插話失敗：${error.message}`);
-  }
-});
-
-reframeForm.addEventListener("submit", async (event) => {
-  event.preventDefault();
-  if (!state.meetingId) {
-    return;
-  }
-
-  const formData = new FormData(reframeForm);
-  const payload = {
-    updated_context: formData.get("updated_context") || "",
-  };
-
-  try {
-    const meeting = await request(`/api/meetings/${state.meetingId}/reframe`, {
-      method: "POST",
-      body: JSON.stringify(payload),
-    });
-    reframeForm.reset();
-    renderMeeting(meeting);
-  } catch (error) {
-    alert(`重整前提失敗：${error.message}`);
-  }
-});
-
-confirmButton.addEventListener("click", async () => {
-  if (!state.meetingId) {
-    return;
-  }
-
-  try {
-    const meeting = await request(`/api/meetings/${state.meetingId}/confirm`, {
-      method: "POST",
-      body: JSON.stringify({ note: "使用者已確認目前前提，可進入正式會議。" }),
-    });
-    renderMeeting(meeting);
-  } catch (error) {
-    alert(`確認前提失敗：${error.message}`);
-  }
-});
-
-finalizeButton.addEventListener("click", async () => {
-  if (!state.meetingId) {
-    return;
-  }
-
-  try {
-    const meeting = await request(`/api/meetings/${state.meetingId}/finalize`, {
-      method: "POST",
-      body: JSON.stringify({}),
-    });
-    renderMeeting(meeting);
-  } catch (error) {
-    alert(`整理最終摘要失敗：${error.message}`);
-  }
-});
-
-exportButtons.forEach((button) => {
-  button.addEventListener("click", async () => {
-    if (!state.meetingId) {
-      return;
-    }
-
-    const format = button.dataset.export;
-    try {
-      const result = await request(`/api/meetings/${state.meetingId}/export?format=${format}`);
-      if (format === "json") {
-        const popup = window.open("", "_blank");
-        popup.document.write(`<pre>${escapeHtml(JSON.stringify(result, null, 2))}</pre>`);
-      } else {
-        const popup = window.open("", "_blank");
-        popup.document.write(result);
-      }
-    } catch (error) {
-      alert(`匯出失敗：${error.message}`);
-    }
+  state.settings = await request("/api/settings", {
+    method: "PUT",
+    body: JSON.stringify(payload),
   });
-});
+  alert("設定已儲存。");
+}
 
+async function createCustomRole() {
+  const payload = {
+    display_name: "新角色",
+    description: "請描述這個角色的定位",
+    system_prompt: "你是一個會議室中的輕量角色。請使用繁體中文發言，先說重點，再補充理由。",
+    color: "#a78bfa",
+    source: "custom",
+    enabled: true,
+  };
+  const created = await request("/api/roles", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  state.roles.push(created);
+  renderRoleEditors();
+  renderRolePicker();
+}
+
+async function createMeeting(event) {
+  event.preventDefault();
+  const formData = new FormData(els.meetingForm);
+  const selectedRoleIds = formData.getAll("selected_role_ids").map((value) => Number(value));
+  const payload = {
+    title: formData.get("title"),
+    objective: formData.get("objective") || "",
+    context_text: formData.get("context_text") || "",
+    selected_role_ids: selectedRoleIds,
+  };
+  const meeting = await request("/api/meetings", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  renderMeeting(meeting);
+  closeDrawer(els.meetingModal);
+  els.meetingForm.reset();
+  renderRolePicker();
+}
+
+async function runRound() {
+  if (!state.meeting) return;
+  const payload = {
+    user_input: [els.roundInput.value.trim(), els.noteInput.value.trim()].filter(Boolean).join("\n"),
+  };
+  const meeting = await request(`/api/meetings/${state.meeting.id}/rounds`, {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+  els.roundInput.value = "";
+  els.noteInput.value = "";
+  renderMeeting(meeting);
+}
+
+async function closeMeeting() {
+  if (!state.meeting) return;
+  const meeting = await request(`/api/meetings/${state.meeting.id}/close`, {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+  renderMeeting(meeting);
+}
+
+async function exportMeeting(exportFormat) {
+  if (!state.meeting) return;
+  const result = await request(`/api/meetings/${state.meeting.id}/export`, {
+    method: "POST",
+    body: JSON.stringify({ export_format: exportFormat, archive: true }),
+  });
+  const popup = window.open("", "_blank");
+  popup.document.write(`<pre>${escapeHtml(result.content)}</pre>`);
+  state.memories = await request("/api/memories");
+  renderArchives();
+  const refreshed = await request(`/api/meetings/${state.meeting.id}`);
+  renderMeeting(refreshed);
+}
+
+function openDrawer(element) {
+  element.classList.remove("hidden");
+}
+
+function closeDrawer(element) {
+  element.classList.add("hidden");
+}
+
+document.getElementById("settings-toggle").addEventListener("click", () => openDrawer(els.settingsDrawer));
+document.getElementById("settings-close").addEventListener("click", () => closeDrawer(els.settingsDrawer));
+document.getElementById("new-meeting-toggle").addEventListener("click", () => openDrawer(els.meetingModal));
+document.getElementById("meeting-close").addEventListener("click", () => closeDrawer(els.meetingModal));
+els.settingsForm.addEventListener("submit", saveSettings);
+document.getElementById("add-role-button").addEventListener("click", createCustomRole);
+els.meetingForm.addEventListener("submit", createMeeting);
+els.runRoundButton.addEventListener("click", runRound);
+els.closeMeetingButton.addEventListener("click", closeMeeting);
+els.exportTextButton.addEventListener("click", () => exportMeeting("text"));
+els.exportPythonButton.addEventListener("click", () => exportMeeting("python"));
+
+bootstrap().catch((error) => {
+  console.error(error);
+  alert(`初始化失敗：${error.message}`);
+});
